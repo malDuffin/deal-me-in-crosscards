@@ -27,18 +27,18 @@ export function CardFace({
           className,
         )}
       >
-        <div className={cn("grid flex-[1.15] place-items-center", suitClass)}>
-          <span className="font-display text-[1.7em] font-bold leading-none tracking-tight">
+        <div className={cn("grid flex-1 place-items-center pt-[4%]", suitClass)}>
+          <span className="font-display text-[1.55em] font-bold leading-none tracking-tight">
             {card.rank}
           </span>
         </div>
         <div
           className={cn(
-            "grid h-[42%] place-items-center",
+            "grid h-[48%] place-items-center",
             `suit-bar-${card.suit.toLowerCase()}`,
           )}
         >
-          <SuitIcon suit={card.suit} inverse className="size-[55%]" />
+          <SuitIcon suit={card.suit} inverse className="size-[78%]" />
         </div>
         {card.fixed ? <span className="absolute inset-x-0 bottom-0 h-0.5 bg-ink/20" /> : null}
       </div>
