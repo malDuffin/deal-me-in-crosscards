@@ -13,6 +13,7 @@ import gsap from "gsap";
 import { makeCard } from "@/lib/game/deck";
 import { makeProceduralLevel } from "@/lib/game/endless";
 import { findLevel, nextLevel } from "@/lib/game/levels";
+import { decodeLevel } from "@/lib/game/share";
 import {
   playBounce,
   playDeal,
@@ -134,6 +135,11 @@ function occupiedAt(
   return null;
 }
 
+/** In puzzle modes (everything except free play) cards may only land on gold target cells. */
+function seatsLocked(campaign: Campaign, targetCount: number): boolean {
+  return campaign !== "free" && targetCount > 0;
+}
+
 function sameCell(a: Cell | "tray" | undefined, b: Cell | undefined) {
   if (!a || a === "tray" || !b) return false;
   return a.r === b.r && a.c === b.c;
@@ -209,10 +215,12 @@ export function PlaySession({
   campaign,
   levelId,
   difficulty = "easy",
+  share,
 }: {
   campaign: Campaign;
   levelId?: string;
   difficulty?: Difficulty;
+  share?: string;
 }) {
   const navigate = useNavigate();
   const [dealKey, setDealKey] = useState(0);
@@ -227,10 +235,14 @@ export function PlaySession({
   const setMuted = useSettings((s) => s.setMuted);
   const nextCache = useRef<{ n: number; difficulty: Difficulty; level: Level } | null>(null);
 
-  const staticLevel = useMemo(
-    () => (campaign === "endless" ? null : findLevel(campaign, levelId)),
-    [campaign, levelId, dealKey],
-  );
+  const staticLevel = useMemo(() => {
+    if (campaign === "endless") return null;
+    if (share) {
+      const decoded = decodeLevel(share);
+      if (decoded) return decoded;
+    }
+    return findLevel(campaign, levelId);
+  }, [campaign, levelId, dealKey, share]);
   const level = campaign === "endless" ? endlessLevel : staticLevel;
 
   const loadEndless = useCallback(
@@ -306,6 +318,18 @@ export function PlaySession({
     for (const t of Object.values(targets)) s.add(cellKey(t.r, t.c));
     return s;
   }, [targets]);
+
+  const locked = seatsLocked(campaign, Object.keys(targets).length);
+
+  const canSeat = useCallback(
+    (r: number, c: number, skipId?: string) => {
+      if (blocked.has(cellKey(r, c))) return false;
+      if (occupiedAt(placements, r, c, skipId)) return false;
+      if (locked && !targetKeys.has(cellKey(r, c))) return false;
+      return true;
+    },
+    [blocked, placements, locked, targetKeys],
+  );
 
   const clearSelect = useCallback(() => {
     setSelectedCard(null);
@@ -491,8 +515,10 @@ export function PlaySession({
     if (!el) return;
     const innerW = grid * CELL_W + (grid - 1) * CELL_GAP + BOARD_PAD * 2 + BOARD_RAIL * 2;
     const innerH = grid * CELL_H + (grid - 1) * CELL_GAP + BOARD_PAD * 2 + BOARD_RAIL * 2;
+    // Tray cards (one row of CELL_H) + tray chrome (label + border + padding ~44px) + buttons row (~52px) + gaps (~24px)
+    const CHROME_H = CELL_H + 44 + 52 + 24;
     const measure = () => {
-      const s = Math.min(1.25, el.clientWidth / innerW, el.clientHeight / innerH);
+      const s = Math.min(1.25, el.clientWidth / innerW, (el.clientHeight - CHROME_H) / innerH);
       setScale(Number.isFinite(s) && s > 0 ? s : 1);
     };
     measure();
@@ -527,8 +553,7 @@ export function PlaySession({
   const tryPlace = useCallback(
     (cardId: string, dest: Cell | "tray") => {
       if (dest !== "tray") {
-        if (blocked.has(cellKey(dest.r, dest.c))) return false;
-        if (occupiedAt(placements, dest.r, dest.c, cardId)) return false;
+        if (!canSeat(dest.r, dest.c, cardId)) return false;
       }
       const next = { ...placements, [cardId]: dest };
       if (JSON.stringify(next) === JSON.stringify(placements)) return false;
@@ -537,7 +562,7 @@ export function PlaySession({
       setSelectedSlot(null);
       return true;
     },
-    [blocked, placements, commit],
+    [canSeat, placements, commit],
   );
 
   const onCardTap = useCallback(
@@ -559,8 +584,7 @@ export function PlaySession({
 
   const onSlotTap = useCallback(
     (cell: Cell) => {
-      if (blocked.has(cellKey(cell.r, cell.c))) return;
-      if (occupiedAt(placements, cell.r, cell.c)) return;
+      if (!canSeat(cell.r, cell.c)) return;
       if (selectedCard) {
         tryPlace(selectedCard, cell);
         return;
@@ -572,7 +596,7 @@ export function PlaySession({
       setSelectedSlot(cell);
       setSelectedCard(null);
     },
-    [blocked, placements, selectedCard, selectedSlot, tryPlace],
+    [canSeat, selectedCard, selectedSlot, tryPlace],
   );
 
   const onPointerDown = (e: ReactPointerEvent, card: Card) => {
@@ -634,7 +658,7 @@ export function PlaySession({
       if (hit instanceof HTMLElement && hit.dataset.r && hit.dataset.c) {
         const r = Number(hit.dataset.r);
         const c = Number(hit.dataset.c);
-        if (!blocked.has(cellKey(r, c)) && !occupiedAt(placements, r, c, drag.id)) {
+        if (canSeat(r, c, drag.id)) {
           dest = { r, c };
         } else {
           dest = drag.origin;
@@ -736,26 +760,26 @@ export function PlaySession({
   return (
     <div className="felt-bg relative flex h-dvh flex-col overflow-hidden">
       <div className="felt-noise absolute inset-0" />
-      <header className="relative z-10 flex items-center justify-between gap-3 px-3 py-2">
+      <header className="relative z-10 flex items-center justify-between gap-3 px-3 py-1">
         <Link
           to="/"
-          className="inline-flex size-11 items-center justify-center rounded-xl text-fg-muted hover:bg-fg/5 hover:text-fg"
+          className="inline-flex size-10 items-center justify-center rounded-xl text-fg-muted hover:bg-fg/5 hover:text-fg"
           aria-label="Back"
         >
           <ChevronLeft className="size-5" />
         </Link>
         <div className="min-w-0 text-center">
-          <p className="text-[11px] uppercase tracking-[0.18em] text-fg-subtle">
+          <p className="text-[10px] uppercase tracking-[0.18em] text-fg-subtle">
             {campaignLabel(campaign, difficulty)}
             {level.number ? `  ·  ${level.number}` : ""}
             {campaign === "puzzle" && level.group ? `  ·  ${level.group}` : ""}
           </p>
-          <h1 className="font-display text-lg font-semibold tracking-tight">{level.name}</h1>
+          <h1 className="font-display text-base font-semibold tracking-tight">{level.name}</h1>
         </div>
         <div className="flex items-center">
           <button
             type="button"
-            className="inline-flex size-11 items-center justify-center rounded-xl text-fg-muted hover:bg-fg/5 hover:text-fg"
+            className="inline-flex size-10 items-center justify-center rounded-xl text-fg-muted hover:bg-fg/5 hover:text-fg"
             aria-label={muted ? "Unmute" : "Mute"}
             onClick={() => {
               unlockAudio();
@@ -766,7 +790,7 @@ export function PlaySession({
           </button>
           <button
             type="button"
-            className="inline-flex size-11 items-center justify-center rounded-xl text-fg-muted hover:bg-fg/5 hover:text-fg"
+            className="inline-flex size-10 items-center justify-center rounded-xl text-fg-muted hover:bg-fg/5 hover:text-fg"
             aria-label="Settings"
             onClick={() => setSettingsOpen(true)}
           >
@@ -832,19 +856,19 @@ export function PlaySession({
                   const isSlotSel =
                     !!selectedSlot && selectedSlot.r === r && selectedSlot.c === c;
                   const isCardSel = !!card && selectedCard === card.id;
+                  const isDroppable = !isBlocked && canSeat(r, c, drag?.id);
                   const isHover =
                     !!hoverCell &&
                     hoverCell.r === r &&
                     hoverCell.c === c &&
-                    !isBlocked &&
-                    (!occ || occ === drag?.id);
+                    isDroppable;
                   const isHi = highlighted.has(key) && occ !== drag?.id;
                   return (
                     <div
                       key={key}
-                      data-cell={isBlocked ? undefined : "1"}
-                      data-r={isBlocked ? undefined : r}
-                      data-c={isBlocked ? undefined : c}
+                      data-cell={isDroppable ? "1" : undefined}
+                      data-r={isDroppable ? r : undefined}
+                      data-c={isDroppable ? c : undefined}
                       className={cn(
                         "relative rounded-[3px]",
                         isBlocked
@@ -917,11 +941,11 @@ export function PlaySession({
                 data-fly-card="1"
                 data-card-id={card.id}
                 className={cn(
-                  "h-[48px] w-[34px] touch-none",
+                  "touch-none",
                   drag?.id === card.id && "invisible",
                   selectedCard === card.id && "ring-2 ring-gold ring-offset-1 ring-offset-bg",
                 )}
-                style={{ cursor: "grab", fontSize: 11 }}
+                style={{ width: CELL_W * scale, height: CELL_H * scale, cursor: "grab", fontSize: 11 * scale }}
                 onPointerDown={(ev) => onPointerDown(ev, card)}
                 onPointerMove={onPointerMove}
                 onPointerUp={onPointerUp}
@@ -950,11 +974,13 @@ export function PlaySession({
 
       {drag && dragCard ? (
         <div
-          className="pointer-events-none fixed z-50 h-[48px] w-[34px] rotate-[4deg]"
+          className="pointer-events-none fixed z-50 rotate-[4deg]"
           style={{
             left: drag.x - drag.grabX,
             top: drag.y - drag.grabY,
-            fontSize: 11,
+            width: CELL_W * scale,
+            height: CELL_H * scale,
+            fontSize: 11 * scale,
           }}
         >
           <CardFace card={dragCard} tray style={cardStyle} />

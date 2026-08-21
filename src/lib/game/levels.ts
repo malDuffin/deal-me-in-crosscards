@@ -1,5 +1,6 @@
 import imported from "./imported-levels.json";
 import { deal } from "./deck";
+import { getTable } from "./editor-store";
 import { BOARD_SIZE, type Campaign, type Level, type Rank, type Suit } from "./types";
 
 type RawLevel = {
@@ -75,6 +76,10 @@ export function levelsFor(campaign: Campaign): Level[] {
 export function findLevel(campaign: Campaign, id?: string): Level {
   if (campaign === "free") return makeFreeLevel();
   if (campaign === "endless") return makeFreeLevel();
+  if (campaign === "custom" && id) {
+    const saved = getTable(id);
+    if (saved) return saved.level;
+  }
   const list = levelsFor(campaign);
   return list.find((l) => l.id === id) ?? list[0];
 }
