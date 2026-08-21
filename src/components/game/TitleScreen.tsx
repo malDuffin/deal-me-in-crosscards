@@ -1,12 +1,14 @@
 import { Link, useNavigate } from "@tanstack/react-router";
-import { BookOpen, Dumbbell, Infinity as InfinityIcon, LayoutGrid, Settings2, Shuffle } from "lucide-react";
+import { BookOpen, Dumbbell, Infinity as InfinityIcon, LayoutGrid, PenLine, Settings2, Share2, Shuffle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { SettingsSheet } from "@/components/game/SettingsSheet";
+import { ShareSheet } from "@/components/game/ShareSheet";
 import { Button } from "@/components/ui/button";
 import { unlockAudio } from "@/lib/game/audio";
 import { fadeSlideIn } from "@/lib/game/juice";
 import { HOWTO_LEVELS, PUZZLE_LEVELS, TRAINING_LEVELS } from "@/lib/game/levels";
 import { loadProgress, type Progress } from "@/lib/game/progress";
+import { gameShareUrl } from "@/lib/game/share";
 import { DIFFICULTY_LABEL, type Campaign, type Difficulty, type Level } from "@/lib/game/types";
 
 // layout: settings-only header, beginner endless tier
@@ -26,6 +28,7 @@ export function TitleScreen() {
   const [list, setList] = useState<Campaign | null>(null);
   const [endlessPick, setEndlessPick] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const [progress, setProgress] = useState<Progress>({
     completed: {},
     freeBest: 0,
@@ -122,6 +125,24 @@ export function TitleScreen() {
               >
                 <Shuffle className="size-4" />
                 Free play
+              </Button>
+              <Button
+                size="lg"
+                variant="secondary"
+                asChild
+              >
+                <Link to="/editor">
+                  <PenLine className="size-4" />
+                  Table editor
+                </Link>
+              </Button>
+              <Button
+                size="lg"
+                variant="secondary"
+                onClick={() => setShareOpen(true)}
+              >
+                <Share2 className="size-4" />
+                Share CrossCards
               </Button>
             </div>
           ) : endlessPick ? (
@@ -221,6 +242,13 @@ export function TitleScreen() {
         </footer>
       </div>
       <SettingsSheet open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <ShareSheet
+        open={shareOpen}
+        onClose={() => setShareOpen(false)}
+        url={gameShareUrl()}
+        title="Share CrossCards"
+        blurb="Challenge your friends to a game of CrossCards!"
+      />
     </div>
   );
 }

@@ -19,36 +19,36 @@ const CENTRE = Math.floor(BOARD_SIZE / 2);
 
 const PARAMS: Record<
   Difficulty,
-  { runs: number; handBias: number; blockers: number; recipes: Recipe[] }
+  { runs: number; targets: number; blockers: number; recipes: Recipe[] }
 > = {
   beginner: {
     runs: 2,
-    handBias: 0.35,
+    targets: 1,
     blockers: 4,
     recipes: ["pair", "pair", "three"],
   },
   easy: {
-    runs: 2,
-    handBias: 0.55,
-    blockers: 6,
+    runs: 3,
+    targets: 2,
+    blockers: 8,
     recipes: ["pair", "pair", "three"],
   },
   medium: {
-    runs: 3,
-    handBias: 0.5,
-    blockers: 12,
+    runs: 4,
+    targets: 3,
+    blockers: 14,
     recipes: ["pair", "three", "twoPair", "straight"],
   },
   hard: {
-    runs: 4,
-    handBias: 0.48,
+    runs: 5,
+    targets: 4,
     blockers: 20,
     recipes: ["three", "twoPair", "straight", "flush", "fullHouse"],
   },
   expert: {
-    runs: 5,
-    handBias: 0.45,
-    blockers: 28,
+    runs: 6,
+    targets: 4,
+    blockers: 26,
     recipes: ["straight", "flush", "fullHouse", "four", "twoPair", "three"],
   },
 };
@@ -293,41 +293,58 @@ function isConnected(placed: Placed[]): boolean {
   return visited.size === cellSet.size;
 }
 
+/** Generate all permutations of an array (Heap's algorithm). */
+function permutations<T>(arr: T[]): T[][] {
+  if (arr.length <= 1) return [arr.slice()];
+  const result: T[][] = [];
+  const a = arr.slice();
+  const c = new Array<number>(a.length).fill(0);
+  result.push(a.slice());
+  let i = 0;
+  while (i < a.length) {
+    if (c[i] < i) {
+      const swapIdx = i % 2 === 0 ? 0 : c[i];
+      [a[swapIdx], a[i]] = [a[i], a[swapIdx]];
+      result.push(a.slice());
+      c[i]++;
+      i = 0;
+    } else {
+      c[i] = 0;
+      i++;
+    }
+  }
+  return result;
+}
+
 /**
- * Reject levels where any non-identity permutation of hand (target) cards
- * onto gold seats still has every card in a valid run.
+ * Try EVERY permutation of target cards onto gold cells.
+ * A permutation is invalid (non-unique) if everyCardInValidHand is still true
+ * for a non-identity assignment.
  * Returns true if the solution is unique.
  */
 function hasUniqueSolution(placed: Placed[]): boolean {
+  const nonTargets = placed.filter((p) => !p.target);
   const targets = placed.filter((p) => p.target);
   if (targets.length <= 1) return true;
 
-  // Group targets by rank — only same-rank cards are interchangeable
-  const byRank = new Map<Rank, Placed[]>();
-  for (const t of targets) {
-    const arr = byRank.get(t.rank) ?? [];
-    arr.push(t);
-    byRank.set(t.rank, arr);
-  }
+  // Gold cell positions
+  const goldCells = targets.map((t) => ({ r: t.r, c: t.c }));
+  // Target cards (rank+suit)
+  const targetCards = targets.map((t) => ({ rank: t.rank, suit: t.suit }));
 
-  // If all target ranks are distinct, solution is already unique
-  const hasDupe = [...byRank.values()].some((arr) => arr.length > 1);
-  if (!hasDupe) return true;
+  // Try all permutations of targetCards onto goldCells
+  for (const perm of permutations(targetCards)) {
+    // Skip identity permutation
+    const isIdentity = perm.every((c, i) => c.rank === targetCards[i].rank && c.suit === targetCards[i].suit);
+    if (isIdentity) continue;
 
-  // Try swapping same-rank targets; if swapped placement still has all cards in valid hand → not unique
-  for (const [, group] of byRank) {
-    if (group.length < 2) continue;
-    // Try swapping pair within group
-    const swapped = placed.map((p) => ({ ...p }));
-    // find indices in placed
-    const gi = group.map((g) => placed.indexOf(g));
-    // swap positions of first two
-    const a = gi[0], b = gi[1];
-    const tmp = { r: swapped[a].r, c: swapped[a].c };
-    swapped[a].r = swapped[b].r; swapped[a].c = swapped[b].c;
-    swapped[b].r = tmp.r; swapped[b].c = tmp.c;
+    // Build placed array with this permutation
+    const permPlaced: Placed[] = [
+      ...nonTargets,
+      ...goldCells.map((cell, i) => ({ ...cell, rank: perm[i].rank, suit: perm[i].suit, target: true })),
+    ];
 
-    if (everyCardInValidHand(swapped)) return false;
+    if (everyCardInValidHand(permPlaced)) return false;
   }
   return true;
 }
@@ -475,9 +492,7 @@ function attemptLevel(difficulty: Difficulty, table: number): Level | null {
     const branchHoriz = !spineHoriz;
     let branch: Placed[] | null = null;
 
-    // The pivot is the first card; place remaining cards as the branch
-    const branchCards = cards.filter((_, idx) => idx !== 0 || cards[0].rank !== pivot.rank || cards[0].suit !== pivot.suit);
-    // Actually: pivot is already placed, we need only remaining cards from the hand
+    // The pivot is already placed; we need only remaining cards from the hand
     // Use pivot as connection point; place the rest
     const remaining = cards.slice(1);
 
@@ -506,28 +521,31 @@ function attemptLevel(difficulty: Difficulty, table: number): Level | null {
     placed.push(...branch);
   }
 
-  // Assign targets: prefer distinct ranks, modest count (max ~3)
-  const handBias = cfg.handBias;
-  // Prefer singleton ranks (ranks appearing only once among placed)
+  // Greedy gold seat selection: shuffle non-centre cards (prefer lower rank frequency),
+  // add a candidate only if hasUniqueSolution still holds, stop at cfg.targets.
   const rankCount = new Map<Rank, number>();
   for (const p of placed) rankCount.set(p.rank, (rankCount.get(p.rank) ?? 0) + 1);
-  const singletons = placed.filter((p) => rankCount.get(p.rank) === 1);
-  const nonSingletons = placed.filter((p) => (rankCount.get(p.rank) ?? 0) > 1);
 
-  // Choose targets from singletons first
-  const targetPool = [...fisherYates(singletons), ...fisherYates(nonSingletons)];
+  // Sort candidates: singletons first (lower rank frequency = harder to swap)
+  let nonCentre = placed.filter((p) => !(p.r === CENTRE && p.c === CENTRE));
+  nonCentre.sort((a, b) => (rankCount.get(a.rank) ?? 0) - (rankCount.get(b.rank) ?? 0));
+  nonCentre = fisherYates(nonCentre); // shuffle within same frequency tiers via secondary shuffle
+
   let targetCount = 0;
-  const maxTargets = Math.min(3, Math.max(1, Math.ceil(placed.length * handBias)));
-
-  for (const p of targetPool) {
-    if (targetCount >= maxTargets) break;
+  for (const p of nonCentre) {
+    if (targetCount >= cfg.targets) break;
     p.target = true;
-    targetCount++;
+    if (!hasUniqueSolution(placed)) {
+      p.target = false; // revert — this candidate breaks uniqueness
+    } else {
+      targetCount++;
+    }
   }
 
   if (targetCount === 0) {
-    // Fallback: make the last placed card a target
-    placed[placed.length - 1].target = true;
+    // Fallback: make a non-centre card a target regardless
+    const fallback = placed.find((p) => !(p.r === CENTRE && p.c === CENTRE));
+    if (fallback) { fallback.target = true; targetCount = 1; }
   }
 
   // Blockers
@@ -582,50 +600,67 @@ export function makeProceduralLevel(difficulty: Difficulty, table: number): Leve
   return minimalCentrePair(difficulty, table);
 }
 
-export function isValidLevel(level: Level): boolean {
-  if (level.grid !== BOARD_SIZE) return false;
-  if (!level.hand.length || !level.targets?.length) return false;
-  if (level.hand.length !== level.targets.length) return false;
+export function levelIssues(
+  level: Level,
+  opts: { requireCentre?: boolean; requireUnique?: boolean } = {},
+): string[] {
+  const { requireCentre = true, requireUnique = true } = opts;
+  const issues: string[] = [];
+
+  if (level.grid !== BOARD_SIZE) issues.push(`Grid must be ${BOARD_SIZE}×${BOARD_SIZE}.`);
+  if (!level.hand.length || !level.targets?.length) issues.push("Level needs at least one hand card and target.");
+  if (level.hand.length !== (level.targets?.length ?? 0)) issues.push("Hand and targets length mismatch.");
+
+  if (issues.length) return issues;
 
   const used = new Set<string>();
   const cards = new Set<string>();
   const take = (r: number, c: number, rank: Rank, suit: Suit) => {
-    if (!inBounds(r, c)) return false;
+    if (!inBounds(r, c)) return "Cell out of bounds.";
     const k = key(r, c);
-    if (used.has(k)) return false;
+    if (used.has(k)) return `Duplicate cell (${r},${c}).`;
     const ck = `${rank}${suit}`;
-    if (cards.has(ck)) return false;
+    if (cards.has(ck)) return `Duplicate card ${rank}${suit}.`;
     used.add(k);
     cards.add(ck);
-    return true;
+    return null;
   };
   for (const f of level.fixed ?? []) {
-    if (!take(f.r, f.c, f.rank, f.suit)) return false;
+    const e = take(f.r, f.c, f.rank, f.suit);
+    if (e) issues.push(e);
   }
   for (const t of level.targets ?? []) {
-    if (!take(t.r, t.c, t.rank, t.suit)) return false;
+    const e = take(t.r, t.c, t.rank, t.suit);
+    if (e) issues.push(e);
   }
   for (const b of level.blocked ?? []) {
-    if (!inBounds(b.r, b.c)) return false;
-    if (used.has(key(b.r, b.c))) return false;
+    if (!inBounds(b.r, b.c)) { issues.push("Blocked cell out of bounds."); continue; }
+    if (used.has(key(b.r, b.c))) { issues.push(`Blocked cell overlaps card (${b.r},${b.c}).`); continue; }
     used.add(key(b.r, b.c));
   }
+
+  if (issues.length) return issues;
+
   const bag = [...level.hand.map((h) => `${h.rank}${h.suit}`)].sort();
   const tbag = [...(level.targets ?? []).map((t) => `${t.rank}${t.suit}`)].sort();
-  if (bag.join() !== tbag.join()) return false;
+  if (bag.join() !== tbag.join()) issues.push("Hand cards do not match targets.");
 
-  // Centre cell must be occupied
-  if (!used.has(key(CENTRE, CENTRE))) return false;
+  if (requireCentre && !used.has(key(CENTRE, CENTRE))) issues.push("Centre cell must be occupied.");
 
-  // Reconstruct placed for deeper checks
+  if (issues.length) return issues;
+
   const allPlaced: Placed[] = [
     ...(level.fixed ?? []).map((f) => ({ ...f, target: false })),
     ...(level.targets ?? []).map((t) => ({ ...t, target: true })),
   ];
 
-  if (!everyCardInValidHand(allPlaced)) return false;
-  if (!isConnected(allPlaced)) return false;
-  if (!hasUniqueSolution(allPlaced)) return false;
+  if (!everyCardInValidHand(allPlaced)) issues.push("Not every card participates in a valid poker run.");
+  if (!isConnected(allPlaced)) issues.push("Cards are not all connected through the board.");
+  if (requireUnique && !hasUniqueSolution(allPlaced)) issues.push("Puzzle does not have a unique solution.");
 
-  return true;
+  return issues;
+}
+
+export function isValidLevel(level: Level): boolean {
+  return levelIssues(level).length === 0;
 }
