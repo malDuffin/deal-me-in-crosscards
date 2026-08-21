@@ -3,6 +3,7 @@ import { Check, ChevronLeft, RotateCcw, Settings2, Undo2, Volume2, VolumeX } fro
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -12,7 +13,6 @@ import gsap from "gsap";
 import { makeCard } from "@/lib/game/deck";
 import { makeProceduralLevel } from "@/lib/game/endless";
 import { findLevel, nextLevel } from "@/lib/game/levels";
-import { generateEndlessLevel } from "@/lib/game/generate-ai";
 import {
   playBounce,
   playDeal,
@@ -23,7 +23,7 @@ import {
   playWin,
   unlockAudio,
 } from "@/lib/game/audio";
-import { boardDealIn, dealIn, popIn, scatterElements, selectPulse } from "@/lib/game/juice";
+import { dealIn, fixedDealIn, placePop, scatterElements, selectPulse, trayReorg } from "@/lib/game/juice";
 import { cellKey, scanBoard, totalScore } from "@/lib/game/poker";
 import { recordScore } from "@/lib/game/progress";
 import { useSettings } from "@/lib/game/settings";
@@ -234,7 +234,7 @@ export function PlaySession({
   const level = campaign === "endless" ? endlessLevel : staticLevel;
 
   const loadEndless = useCallback(
-    async (n: number) => {
+    (n: number) => {
       const cached = nextCache.current;
       const hit = cached && cached.n === n && cached.difficulty === difficulty;
       setTableNo(n);
@@ -244,46 +244,29 @@ export function PlaySession({
         nextCache.current = null;
         setEndlessLevel(cached.level);
         setEndlessLoading(false);
-        void generateEndlessLevel({ data: { difficulty, table: n + 1 } })
-          .then((res) => {
-            nextCache.current = { n: n + 1, difficulty, level: res.level };
-          })
-          .catch(() => {
-            nextCache.current = {
-              n: n + 1,
-              difficulty,
-              level: makeProceduralLevel(difficulty, n + 1),
-            };
-          });
+        nextCache.current = {
+          n: n + 1,
+          difficulty,
+          level: makeProceduralLevel(difficulty, n + 1),
+        };
         return;
       }
       setEndlessLoading(true);
-      try {
-        const res = await generateEndlessLevel({ data: { difficulty, table: n } });
-        setEndlessLevel(res.level);
-        void generateEndlessLevel({ data: { difficulty, table: n + 1 } })
-          .then((next) => {
-            nextCache.current = { n: n + 1, difficulty, level: next.level };
-          })
-          .catch(() => {
-            nextCache.current = {
-              n: n + 1,
-              difficulty,
-              level: makeProceduralLevel(difficulty, n + 1),
-            };
-          });
-      } catch {
-        setEndlessLevel(makeProceduralLevel(difficulty, n));
-      } finally {
-        setEndlessLoading(false);
-      }
+      const lvl = makeProceduralLevel(difficulty, n);
+      setEndlessLevel(lvl);
+      setEndlessLoading(false);
+      nextCache.current = {
+        n: n + 1,
+        difficulty,
+        level: makeProceduralLevel(difficulty, n + 1),
+      };
     },
     [difficulty],
   );
 
   useEffect(() => {
     nextCache.current = null;
-    if (campaign === "endless") void loadEndless(1);
+    if (campaign === "endless") loadEndless(1);
   }, [campaign, loadEndless]);
 
   const built = useMemo(
@@ -316,6 +299,7 @@ export function PlaySession({
   const pendingFloats = useRef(0);
   const pendingWin = useRef(false);
   const lastPop = useRef<string | null>(null);
+  const trayPrevRects = useRef<Map<string, DOMRect>>(new Map());
 
   const targetKeys = useMemo(() => {
     const s = new Set<string>();
@@ -340,12 +324,22 @@ export function PlaySession({
     setSelectedCard(null);
     setSelectedSlot(null);
     prevHands.current = "";
+    trayPrevRects.current = new Map();
     requestAnimationFrame(() => {
-      const boardEls = [...(wrapRef.current?.querySelectorAll("[data-fly-card][data-on-board]") ?? [])];
-      const trayEls = [...(trayRef.current?.querySelectorAll("[data-fly-card]") ?? [])];
-      boardDealIn(boardEls);
+      const boardEls = [...(wrapRef.current?.querySelectorAll<HTMLElement>("[data-fly-card][data-on-board]") ?? [])];
+      const trayEls = [...(trayRef.current?.querySelectorAll<HTMLElement>("[data-fly-card]") ?? [])];
+      fixedDealIn(boardEls);
       dealIn(trayEls);
       if (trayEls.length) playDeal();
+      requestAnimationFrame(() => {
+        const els = [...(trayRef.current?.querySelectorAll<HTMLElement>("[data-card-id]") ?? [])];
+        const map = new Map<string, DOMRect>();
+        for (const el of els) {
+          const id = el.dataset.cardId;
+          if (id) map.set(id, el.getBoundingClientRect());
+        }
+        trayPrevRects.current = map;
+      });
     });
   }, [built, level?.briefing]);
 
@@ -374,6 +368,14 @@ export function PlaySession({
     .slice()
     .sort(sortHighToLow);
   const trayEmpty = cards.every((c) => c.fixed || placements[c.id] !== "tray");
+
+  const trayOrderKey = trayCards.map((c) => c.id).join(",");
+
+  useLayoutEffect(() => {
+    if (!trayRef.current) return;
+    const els = [...trayRef.current.querySelectorAll<HTMLElement>("[data-card-id]")];
+    trayPrevRects.current = trayReorg(els, trayPrevRects.current);
+  }, [trayOrderKey]);
 
   const revealWin = useCallback(() => {
     if (!pendingWin.current) return;
@@ -488,8 +490,9 @@ export function PlaySession({
     const el = wrapRef.current;
     if (!el) return;
     const innerW = grid * CELL_W + (grid - 1) * CELL_GAP + BOARD_PAD * 2 + BOARD_RAIL * 2;
+    const innerH = grid * CELL_H + (grid - 1) * CELL_GAP + BOARD_PAD * 2 + BOARD_RAIL * 2;
     const measure = () => {
-      const s = Math.min(1.25, el.clientWidth / innerW);
+      const s = Math.min(1.25, el.clientWidth / innerW, el.clientHeight / innerH);
       setScale(Number.isFinite(s) && s > 0 ? s : 1);
     };
     measure();
@@ -511,7 +514,7 @@ export function PlaySession({
   useEffect(() => {
     if (!lastPop.current) return;
     const el = document.querySelector(`[data-card-id="${lastPop.current}"]`);
-    popIn(el);
+    placePop(el);
     lastPop.current = null;
   }, [placements]);
 
@@ -787,8 +790,8 @@ export function PlaySession({
           </div>
         </div>
 
-        <div ref={wrapRef} className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
-          <div className="flex justify-center py-1">
+        <div ref={wrapRef} className="min-h-0 flex-1 overflow-hidden">
+          <div className="flex h-full items-center justify-center py-1">
           <div
             style={{
               width: innerW * scale,
