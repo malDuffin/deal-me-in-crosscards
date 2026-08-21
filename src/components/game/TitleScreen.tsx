@@ -1,7 +1,6 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import { BookOpen, Dumbbell, Infinity as InfinityIcon, LayoutGrid, Settings2, Shuffle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { AuthSlot } from "@/components/AuthSlot";
 import { SettingsSheet } from "@/components/game/SettingsSheet";
 import { Button } from "@/components/ui/button";
 import { unlockAudio } from "@/lib/game/audio";
@@ -10,7 +9,12 @@ import { HOWTO_LEVELS, PUZZLE_LEVELS, TRAINING_LEVELS } from "@/lib/game/levels"
 import { loadProgress, type Progress } from "@/lib/game/progress";
 import { DIFFICULTY_LABEL, type Campaign, type Difficulty, type Level } from "@/lib/game/types";
 
+// layout: settings-only header, beginner endless tier
+
+// endless difficulty list includes beginner
+
 const DIFFS: { id: Difficulty; blurb: string }[] = [
+  { id: "beginner", blurb: "Tiny crossword. Just a couple of hands." },
   { id: "easy", blurb: "A few gold seats. Friendly patterns." },
   { id: "medium", blurb: "Mixed hands and more to place." },
   { id: "hard", blurb: "A crowded crossword of poker." },
@@ -60,17 +64,14 @@ export function TitleScreen() {
       <div className="relative z-10 mx-auto flex min-h-dvh max-w-lg flex-col px-5 pb-10 pt-5">
         <header className="flex items-center justify-between">
           <p className="text-[11px] uppercase tracking-[0.22em] text-fg-subtle">Deal Me In</p>
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              className="inline-flex size-11 items-center justify-center rounded-xl text-fg-muted transition-transform duration-150 ease-out hover:bg-fg/5 hover:text-fg active:scale-[0.96]"
-              aria-label="Settings"
-              onClick={() => setSettingsOpen(true)}
-            >
-              <Settings2 className="size-5" />
-            </button>
-            <AuthSlot />
-          </div>
+          <button
+            type="button"
+            className="inline-flex size-11 items-center justify-center rounded-xl text-fg-muted transition-transform duration-150 ease-out hover:bg-fg/5 hover:text-fg active:scale-[0.96]"
+            aria-label="Settings"
+            onClick={() => setSettingsOpen(true)}
+          >
+            <Settings2 className="size-5" />
+          </button>
         </header>
 
         <div className="flex flex-1 flex-col justify-center py-8">
