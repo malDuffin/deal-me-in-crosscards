@@ -29,9 +29,9 @@ export type Cell = { r: number; c: number };
 
 export type Placement = Record<string, Cell | "tray">;
 
-export type Campaign = "howto" | "training" | "puzzle" | "free" | "endless";
+export type Campaign = "howto" | "training" | "puzzle" | "free" | "endless" | "custom";
 
-export type Difficulty = "easy" | "medium" | "hard" | "expert";
+export type Difficulty = "beginner" | "easy" | "medium" | "hard" | "expert";
 
 export type CardStyle = "large" | "classic" | "realistic";
 
@@ -112,8 +112,18 @@ export const BOARD_PAD = 10;
 export const BOARD_RAIL = 7;
 
 export const DIFFICULTY_LABEL: Record<Difficulty, string> = {
+  beginner: "Beginner",
   easy: "Easy",
   medium: "Medium",
   hard: "Hard",
   expert: "Expert",
 };
+
+/** Ordered list for UI pickers (easiest → hardest). */
+export const DIFFICULTY_ORDER: Difficulty[] = [
+  "beginner",
+  "easy",
+  "medium",
+  "hard",
+  "expert",
+];
