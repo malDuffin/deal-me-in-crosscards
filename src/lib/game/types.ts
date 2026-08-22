@@ -110,8 +110,10 @@ export const BOARD_SIZE = 11;
 export const CELL_W = 34;
 export const CELL_H = 48;
 export const CELL_GAP = 2;
-export const BOARD_PAD = 10;
-export const BOARD_RAIL = 7;
+/** Felt gutter inside the rim — keep thin so the 11×11 can fill a phone. */
+export const BOARD_PAD = 4;
+/** Green rim around the grid. No wood rail — that ate mobile width. */
+export const BOARD_RAIL = 2;
 
 export const DIFFICULTY_LABEL: Record<Difficulty, string> = {
   beginner: "Beginner",

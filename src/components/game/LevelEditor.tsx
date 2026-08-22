@@ -8,7 +8,7 @@ import { StopSign } from "./StopSign";
 import { deleteTable, loadSavedTables, saveTable, type SavedTable } from "@/lib/game/editor-store";
 import { levelIssues, neededStops } from "@/lib/game/endless";
 import { levelShareUrl } from "@/lib/game/share";
-import { useSettings } from "@/lib/game/settings";
+import { feltDropShadow, useSettings } from "@/lib/game/settings";
 import {
   BOARD_PAD,
   BOARD_RAIL,
@@ -99,6 +99,10 @@ function toLevel(grid: CellState[], name: string, id?: string): Level {
 export function LevelEditor() {
   const navigate = useNavigate();
   const cardStyle = useSettings((s) => s.cardStyle);
+  const boardShadows = useSettings((s) => s.boardShadows);
+  const shadowDistance = useSettings((s) => s.shadowDistance);
+  const shadowOpacity = useSettings((s) => s.shadowOpacity);
+  const placedShadow = feltDropShadow(boardShadows, shadowDistance, shadowOpacity);
   const [view, setView] = useState<"library" | "edit">("library");
   const [saved, setSaved] = useState<SavedTable[]>([]);
   const [grid, setGrid] = useState<CellState[]>(emptyGrid);
@@ -121,7 +125,7 @@ export function LevelEditor() {
     const el = wrapRef.current;
     if (!el || view !== "edit") return;
     const measure = () => {
-      const s = Math.min(el.clientWidth / innerW, el.clientHeight / innerH) * 0.98;
+      const s = Math.min(el.clientWidth / innerW, el.clientHeight / innerH);
       setScale(Number.isFinite(s) && s > 0 ? Math.max(0.18, Math.min(s, 1.2)) : 1);
     };
     measure();
@@ -333,7 +337,7 @@ export function LevelEditor() {
         <div className="w-11" />
       </header>
 
-      <div className="relative z-10 mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col px-2 pb-3">
+      <div className="relative z-10 mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col px-0 pb-3 sm:px-3">
         <div className="mb-2 flex flex-wrap justify-center gap-1.5">
           {(
             [
@@ -432,7 +436,7 @@ export function LevelEditor() {
                 }}
               >
                 <div
-                  className="rounded-[18px] border-rail bg-felt shadow-[inset_0_0_40px_rgba(0,0,0,0.45)]"
+                  className="rounded-md border-board-rim bg-felt shadow-[inset_0_0_28px_rgba(0,0,0,0.4)]"
                   style={{ borderWidth: BOARD_RAIL, padding: BOARD_PAD }}
                 >
                   <div
@@ -466,7 +470,7 @@ export function LevelEditor() {
                             </span>
                           ) : null}
                           {cell.kind === "card" ? (
-                            <span className="absolute inset-[1px]">
+                            <span className="absolute inset-[1px]" style={{ filter: placedShadow }}>
                               <CardFace
                                 card={{
                                   id: `${cell.rank}${cell.suit}`,

@@ -293,7 +293,6 @@ export function TitleScreen() {
                     key={d.id}
                     type="button"
                     onClick={() => {
-                      setWaiting(true);
                       void navigate({
                         to: "/play",
                         search: { mode: "endless", diff: d.id },

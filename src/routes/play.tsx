@@ -9,7 +9,7 @@ type PlaySearch = {
 };
 
 const MODES: Campaign[] = ["puzzle", "free", "howto", "training", "endless"];
-const DIFFS: Difficulty[] = ["easy", "medium", "hard", "expert"];
+const DIFFS: Difficulty[] = ["beginner", "easy", "medium", "hard", "expert"];
 
 function parseSearch(raw: Record<string, unknown>): PlaySearch {
   const mode = MODES.includes(raw.mode as Campaign) ? (raw.mode as Campaign) : "howto";

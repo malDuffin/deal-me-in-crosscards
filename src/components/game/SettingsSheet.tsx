@@ -3,8 +3,15 @@ import { X } from "lucide-react";
 import gsap from "gsap";
 import { applyAudioPrefs, unlockAudio } from "@/lib/game/audio";
 import { prefersReducedMotion } from "@/lib/game/juice";
-import { useSettings } from "@/lib/game/settings";
-import type { Card, CardStyle } from "@/lib/game/types";
+import {
+  feltDropShadow,
+  SHADOW_DISTANCE_MAX,
+  SHADOW_DISTANCE_MIN,
+  SHADOW_OPACITY_MAX,
+  SHADOW_OPACITY_MIN,
+  useSettings,
+} from "@/lib/game/settings";
+import { SUITS, type Card, type CardStyle, type Suit } from "@/lib/game/types";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { CardFace } from "./CardFace";
@@ -14,7 +21,7 @@ const SAMPLE: Card = { id: "preview", rank: "A", suit: "H" };
 const STYLES: { id: CardStyle; name: string; blurb: string }[] = [
   { id: "large", name: "Large rank", blurb: "Big letter on top, suit color below" },
   { id: "classic", name: "Classic", blurb: "Rank and suit stacked like a mini card" },
-  { id: "realistic", name: "Realistic", blurb: "Traditional corners and a center pip" },
+  { id: "realistic", name: "Realistic", blurb: "Full-face pips and courts (Cardmeister)" },
 ];
 
 export function SettingsSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -25,10 +32,16 @@ export function SettingsSheet({ open, onClose }: { open: boolean; onClose: () =>
     colorblind,
     music,
     muted,
+    boardShadows,
+    shadowDistance,
+    shadowOpacity,
     setCardStyle,
     setColorblind,
     setMusic,
     setMuted,
+    setBoardShadows,
+    setShadowDistance,
+    setShadowOpacity,
   } = useSettings();
 
   useEffect(() => {
@@ -70,6 +83,8 @@ export function SettingsSheet({ open, onClose }: { open: boolean; onClose: () =>
     }
   }, [open]);
 
+  const previewShadow = feltDropShadow(boardShadows, shadowDistance, shadowOpacity);
+
   return (
     <div
       ref={panelRef}
@@ -80,7 +95,7 @@ export function SettingsSheet({ open, onClose }: { open: boolean; onClose: () =>
     >
       <div
         ref={sheetRef}
-        className="glass max-h-[min(92dvh,680px)] w-full max-w-md overflow-y-auto rounded-t-[28px] p-5 pb-10 sm:rounded-[28px]"
+        className="glass max-h-[min(92dvh,760px)] w-full max-w-md overflow-y-auto rounded-t-[28px] p-5 pb-10 sm:rounded-[28px]"
       >
         <div className="relative mb-4">
           <h2 className="text-center font-display text-xl font-semibold tracking-tight">
@@ -97,7 +112,7 @@ export function SettingsSheet({ open, onClose }: { open: boolean; onClose: () =>
         </div>
 
         <p className="mb-2 text-[11px] uppercase tracking-[0.16em] text-fg-subtle">Card style</p>
-        <div className="mb-5 flex flex-col gap-2">
+        <div className="mb-3 flex flex-col gap-2">
           {STYLES.map((s) => (
             <button
               key={s.id}
@@ -122,6 +137,60 @@ export function SettingsSheet({ open, onClose }: { open: boolean; onClose: () =>
               </span>
             </button>
           ))}
+        </div>
+
+        <div className="mb-5 flex justify-center gap-2">
+          {SUITS.map((s: Suit) => (
+            <span key={s} className="h-[58px] w-[41px]">
+              <CardFace
+                card={{ id: `gold-${s}`, rank: "A", suit: s }}
+                style={cardStyle}
+                tray
+              />
+            </span>
+          ))}
+        </div>
+
+        <p className="mb-2 text-[11px] uppercase tracking-[0.16em] text-fg-subtle">
+          Board shadows
+        </p>
+        <Toggle
+          title="Shadows on placed cards"
+          blurb="Cast onto the felt after a card is seated"
+          on={boardShadows}
+          onClick={() => setBoardShadows(!boardShadows)}
+        />
+        <div className="mt-2 space-y-2">
+          <SliderRow
+            title="Shadow distance"
+            blurb="How far the shadow sits from the card"
+            value={shadowDistance}
+            min={SHADOW_DISTANCE_MIN}
+            max={SHADOW_DISTANCE_MAX}
+            step={1}
+            disabled={!boardShadows}
+            format={(v) => `${Math.round(v)} px`}
+            onChange={setShadowDistance}
+          />
+          <SliderRow
+            title="Shadow opacity"
+            blurb="How heavy the shadow reads on the felt"
+            value={shadowOpacity}
+            min={SHADOW_OPACITY_MIN}
+            max={SHADOW_OPACITY_MAX}
+            step={0.05}
+            disabled={!boardShadows}
+            format={(v) => `${Math.round(v * 100)}%`}
+            onChange={setShadowOpacity}
+          />
+        </div>
+        <div className="mt-2 mb-5 grid place-items-center rounded-2xl bg-felt px-4 py-5">
+          <div
+            className="h-16 w-[46px]"
+            style={{ fontSize: 14, filter: previewShadow }}
+          >
+            <CardFace card={{ ...SAMPLE }} style={cardStyle} tray />
+          </div>
         </div>
 
         <p className="mb-2 text-[11px] uppercase tracking-[0.16em] text-fg-subtle">
@@ -200,5 +269,53 @@ function Toggle({
         />
       </span>
     </button>
+  );
+}
+
+function SliderRow({
+  title,
+  blurb,
+  value,
+  min,
+  max,
+  step,
+  disabled,
+  format,
+  onChange,
+}: {
+  title: string;
+  blurb: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  disabled?: boolean;
+  format: (v: number) => string;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <label
+      className={cn(
+        "glass-chip block rounded-2xl px-3 py-3",
+        disabled && "pointer-events-none opacity-45",
+      )}
+    >
+      <span className="flex items-baseline justify-between gap-3">
+        <span className="font-medium">{title}</span>
+        <span className="text-xs tabular-nums text-fg-muted">{format(value)}</span>
+      </span>
+      <span className="block text-xs text-fg-muted">{blurb}</span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        disabled={disabled}
+        aria-label={title}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="mt-2 w-full accent-gold"
+      />
+    </label>
   );
 }

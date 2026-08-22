@@ -58,6 +58,9 @@ export const Route = createRootRoute({
     ],
     scripts: [
       {
+        src: "/vendor/cardmeister/elements.cardmeister.full.js",
+      },
+      {
         async: true,
         src: `https://www.googletagmanager.com/gtag/js?id=${GA_MEASUREMENT_ID}`,
       },

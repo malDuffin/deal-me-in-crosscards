@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createJiti } from "jiti";
 
 const jiti = createJiti(import.meta.url);
-const { levelIssues, neededStops } = await jiti.import("../src/lib/game/endless.ts");
+const { levelIssues, neededStops, makeScoringDeal } = await jiti.import("../src/lib/game/endless.ts");
 
 const L = (over) => ({
   id: "t",
@@ -186,5 +186,47 @@ describe("neededStops closes dead-end pairs", () => {
     const keys = new Set(stops.map((p) => `${p.r},${p.c}`));
     assert.ok(keys.has("5,3"), "stop before four aces");
     assert.ok(keys.has("5,8"), "stop after four aces");
+  });
+});
+
+const ACE_HIGH = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"];
+const ACE_LOW = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"];
+
+function rankCanStraight(cards, rank) {
+  for (const order of [ACE_HIGH, ACE_LOW]) {
+    const present = new Set(cards.map((c) => c.rank));
+    const idx = order.indexOf(rank);
+    if (idx < 0) continue;
+    for (let start = Math.max(0, idx - 4); start <= idx && start + 4 < order.length; start++) {
+      const window = order.slice(start, start + 5);
+      if (window.every((r) => present.has(r))) return true;
+    }
+  }
+  return false;
+}
+
+describe("free play deals are closed scoring sets", () => {
+  it("never deals a singleton that cannot join a flush or straight", () => {
+    for (let n = 0; n < 20; n++) {
+      const cards = makeScoringDeal();
+      assert.ok(cards.length >= 8 && cards.length <= 12, `deal size ${cards.length}`);
+      const ids = cards.map((c) => `${c.rank}${c.suit}`);
+      assert.equal(new Set(ids).size, ids.length, "duplicate cards in deal");
+      const rankN = new Map();
+      const suitN = new Map();
+      for (const c of cards) {
+        rankN.set(c.rank, (rankN.get(c.rank) ?? 0) + 1);
+        suitN.set(c.suit, (suitN.get(c.suit) ?? 0) + 1);
+      }
+      for (const c of cards) {
+        if ((rankN.get(c.rank) ?? 0) >= 2) continue;
+        const flush = (suitN.get(c.suit) ?? 0) >= 5;
+        const straight = rankCanStraight(cards, c.rank);
+        assert.ok(
+          flush || straight,
+          `orphan ${c.rank}${c.suit} in ${ids.join(" ")}`,
+        );
+      }
+    }
   });
 });

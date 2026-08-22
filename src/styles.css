@@ -20,8 +20,11 @@
   --color-ok: #8fbf9a;
   --color-cell: #1a3324;
   --color-cell-line: color-mix(in oklab, var(--color-fg) 10%, transparent);
-  --color-card-ivory: #fbf6e8;
-  --color-card-gold: #f3e4a8;
+  --color-board-rim: color-mix(in oklab, var(--color-felt) 55%, #000);
+  --color-gold-suit-s: #101210;
+  --color-gold-suit-h: #be1028;
+  --color-gold-suit-d: #e24a0c;
+  --color-gold-suit-c: #1f4a32;
 
   --radius-xs: 4px;
   --radius-sm: 8px;
@@ -341,11 +344,68 @@
 .suit-bar-d { background: var(--suit-d, var(--color-pip-red)); }
 .suit-bar-c { background: var(--suit-c, var(--color-ink)); }
 
+/* Gold player cards: split reds and blacks so suits read on yellow. */
+.card-playable {
+  --suit-s: var(--color-gold-suit-s);
+  --suit-h: var(--color-gold-suit-h);
+  --suit-d: var(--color-gold-suit-d);
+  --suit-c: var(--color-gold-suit-c);
+}
+
 body.colorblind {
   --suit-s: #111111;
   --suit-h: #e69f00;
   --suit-d: #56b4e9;
   --suit-c: #009e73;
+}
+
+body.colorblind .card-playable {
+  --suit-s: #111111;
+  --suit-h: #e69f00;
+  --suit-d: #56b4e9;
+  --suit-c: #009e73;
+}
+
+playing-card.playing-card-el,
+.playing-card-el {
+  display: block !important;
+  width: 100%;
+  height: 100%;
+  line-height: 0;
+}
+
+playing-card.playing-card-el > img,
+.playing-card-el > img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: fill;
+}
+
+input[type="range"].accent-gold {
+  appearance: none;
+  height: 6px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--color-cream) 22%, transparent);
+}
+input[type="range"].accent-gold::-webkit-slider-thumb {
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--color-gold);
+  border: 1px solid color-mix(in oklab, #000 28%, transparent);
+  box-shadow: 0 1px 2px color-mix(in oklab, #000 35%, transparent);
+}
+input[type="range"].accent-gold::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--color-gold);
+  border: 1px solid color-mix(in oklab, #000 28%, transparent);
+}
+input[type="range"].accent-gold:disabled {
+  opacity: 1;
 }
 
 .score-float {

@@ -101,10 +101,23 @@ const ENDLESS_GOLD_FLOOR: Record<string, number> = {
 };
 
 /** Progress updates while a dense Endless table is being built. */
+export type GenBoardPreview = {
+  grid?: number;
+  cells: {
+    r: number;
+    c: number;
+    rank?: Rank;
+    suit?: Suit;
+    gold?: boolean;
+    stop?: boolean;
+  }[];
+};
+
 export type GenProgress = {
   phase: string;
   attempt: number;
   detail?: string;
+  preview?: GenBoardPreview;
 };
 
 const key = (r: number, c: number) => `${r},${c}`;
@@ -657,7 +670,65 @@ function graftOneRun(
   return false;
 }
 
-function attemptLevel(difficulty: Difficulty, table: number): Level | null {
+function previewFromOccupied(
+  occupied: Map<string, RS>,
+  blocked: Cell[],
+  goldKeys?: Set<string>,
+): GenBoardPreview {
+  const cells: GenBoardPreview["cells"] = [];
+  for (const [k, rs] of occupied) {
+    const [r, c] = k.split(",").map(Number);
+    cells.push({
+      r,
+      c,
+      rank: rs.rank,
+      suit: rs.suit,
+      gold: goldKeys?.has(k) ?? false,
+    });
+  }
+  for (const b of blocked) {
+    if (occupied.has(key(b.r, b.c))) continue;
+    cells.push({ r: b.r, c: b.c, stop: true });
+  }
+  return { grid: BOARD_SIZE, cells };
+}
+
+function previewFromLevel(level: Level): GenBoardPreview {
+  const gold = new Set((level.targets ?? []).map((t) => key(t.r, t.c)));
+  const occupied = new Map<string, RS>();
+  for (const f of level.fixed ?? []) occupied.set(key(f.r, f.c), { rank: f.rank, suit: f.suit });
+  for (const t of level.targets ?? []) occupied.set(key(t.r, t.c), { rank: t.rank, suit: t.suit });
+  return previewFromOccupied(occupied, level.blocked ?? [], gold);
+}
+
+function explainIssue(issue: string): string {
+  if (/one correct seat/i.test(issue)) {
+    return "Gold seats aren't unique — two cards of the same rank could swap chairs. Remaking the gold marks.";
+  }
+  if (/at least \d+ gold/i.test(issue)) {
+    return `${issue} This cut was too sparse, so it goes back in the deck.`;
+  }
+  if (/force more copies/i.test(issue)) {
+    return "Gold seats demand more copies of a rank than the hand holds. Scrapping this layout.";
+  }
+  if (/valid poker hand/i.test(issue)) {
+    return "A run on this crossword isn't a legal poker hand. Rebuilding the grafts.";
+  }
+  if (/touch the rest/i.test(issue)) {
+    return "The crossword split apart. Every card has to touch the rest of the table.";
+  }
+  if (/centre square/i.test(issue)) {
+    return "Nothing landed on the centre square. Starting a new spine through the middle.";
+  }
+  return issue;
+}
+
+function attemptLevel(
+  difficulty: Difficulty,
+  table: number,
+  onDraft?: (p: GenBoardPreview) => void,
+  goldGoal?: number,
+): Level | null {
   const cfg = PARAMS[difficulty] ?? PARAMS.easy;
   const deck: RS[] = fisherYates(SUITS.flatMap((suit) => RANKS.map((rank) => ({ rank, suit }))));
   const occupied = new Map<string, RS>();
@@ -717,20 +788,31 @@ function attemptLevel(difficulty: Difficulty, table: number): Level | null {
     const [r, c] = k.split(",").map(Number);
     return { r, c, ...rs };
   });
-  if (!occupied.has(key(CENTRE, CENTRE)) || !cardCellsConnected(allCells)) return null;
-  if (allCells.length < cfg.minCards) return null;
+  if (!occupied.has(key(CENTRE, CENTRE)) || !cardCellsConnected(allCells)) {
+    onDraft?.(previewFromOccupied(occupied, neededStops(occupied)));
+    return null;
+  }
+  if (allCells.length < cfg.minCards) {
+    onDraft?.(previewFromOccupied(occupied, neededStops(occupied)));
+    return null;
+  }
 
   const blocked = neededStops(occupied);
   const blockedSet = new Set(blocked.map((p) => key(p.r, p.c)));
-  if (!everyCardInValidHand(occupied, blockedSet)) return null;
+  if (!everyCardInValidHand(occupied, blockedSet)) {
+    onDraft?.(previewFromOccupied(occupied, blocked));
+    return null;
+  }
+  onDraft?.(previewFromOccupied(occupied, blocked));
 
-  // Gold-seat count inside the authored range for this tier.
+  // Gold-seat count: caller may ease this down after failed shuffles so a
+  // unique hand is more likely. Never go below the difficulty floor.
+  const goldFloor = ENDLESS_GOLD_FLOOR[difficulty] ?? cfg.targetMin;
   const span = cfg.targetMax - cfg.targetMin + 1;
-  const goal = Math.min(
-    allCells.length - 1,
-    cfg.targetMin + Math.floor(Math.random() * span),
-  );
-  if (goal < cfg.targetMin) return null;
+  const requested =
+    goldGoal ?? cfg.targetMin + Math.floor(Math.random() * span);
+  const goal = Math.min(allCells.length - 1, Math.max(goldFloor, requested));
+  if (goal < goldFloor) return null;
 
   const rankFreq = new Map<string, number>();
   for (const cell of allCells) rankFreq.set(cell.rank, (rankFreq.get(cell.rank) ?? 0) + 1);
@@ -773,7 +855,7 @@ function attemptLevel(difficulty: Difficulty, table: number): Level | null {
         }
       }
     }
-    if (chosen.length < cfg.targetMin) return null;
+    if (chosen.length < goal) return null;
     const trial = levelFromParts(allCells, chosen, blocked);
     if (!goldForcesFeasible(trial)) return null;
     if (!hasUniqueSolution(trial)) return null;
@@ -786,6 +868,7 @@ function attemptLevel(difficulty: Difficulty, table: number): Level | null {
   if (!chosen) return null;
 
   const targetKeys = new Set(chosen.map((c) => key(c.r, c.c)));
+  onDraft?.(previewFromOccupied(occupied, blocked, targetKeys));
   const placedList: Placed[] = allCells.map((cell) => ({
     ...cell,
     target: targetKeys.has(key(cell.r, cell.c)),
@@ -837,34 +920,90 @@ export async function makeProceduralLevel(
   onProgress?: (p: GenProgress) => void,
 ): Promise<Level> {
   const cfg = PARAMS[difficulty] ?? PARAMS.easy;
-  const report = (phase: string, attempt: number, detail?: string) => {
-    onProgress?.({ phase, attempt, detail });
+  let lastPreview: GenBoardPreview | undefined;
+  const report = (phase: string, attempt: number, detail?: string, preview?: GenBoardPreview) => {
+    if (preview) lastPreview = preview;
+    onProgress?.({ phase, attempt, detail, preview: preview ?? lastPreview });
   };
+  const draft = (p: GenBoardPreview) => {
+    lastPreview = p;
+    onProgress?.({
+      phase: "Laying this shuffle on the felt",
+      attempt: 0,
+      detail: `${p.cells.filter((c) => c.rank).length} cards in this try.`,
+      preview: p,
+    });
+  };
+  const decide = (level: Level): string[] => levelIssues(level);
 
   const primaryAttempts =
     difficulty === "expert" ? 500 : difficulty === "hard" ? 380 : difficulty === "medium" ? 260 : 180;
+  const label = difficulty[0]!.toUpperCase() + difficulty.slice(1);
+  const goldFloor = ENDLESS_GOLD_FLOOR[difficulty] ?? cfg.targetMin;
+  let goldGoal = cfg.targetMax;
+  const easeHand = () => {
+    if (goldGoal > goldFloor) goldGoal -= 1;
+  };
 
-  report("Shuffling the deck", 0, `${cfg.targetMin}–${cfg.targetMax} gold seats`);
+  report(
+    `Cutting a fresh ${label} deck`,
+    0,
+    `I need a connected crossword of ${cfg.minCards}+ cards. Starting with ${goldGoal} gold seats in the hand — I'll pull one fewer each time a shuffle fails, down to ${goldFloor}.`,
+  );
   await yieldToUi();
 
   for (let i = 0; i < primaryAttempts; i++) {
     if (i % 6 === 0) {
       report(
-        "Building the crossword",
+        "Grafting poker hands onto a centre spine",
         i + 1,
-        `aiming for ${cfg.targetMin}–${cfg.targetMax} gold · ${cfg.minCards}+ cards`,
+        `Attempt ${i + 1} of ${primaryAttempts}. Hand is ${goldGoal} gold cards. Laying pairs, trips and longer runs so the table fills like a crossword.`,
+        lastPreview,
       );
       await yieldToUi();
     }
-    const level = attemptLevel(difficulty, table);
-    if (!level) continue;
+    const level = attemptLevel(difficulty, table, draft, goldGoal);
+    if (!level) {
+      easeHand();
+      if (i % 6 === 0) {
+        report(
+          "That shuffle didn't hold together",
+          i + 1,
+          goldGoal < cfg.targetMax
+            ? `Not enough touching hands, or the centre never filled. Next shuffle uses ${goldGoal} gold seats.`
+            : "Not enough touching hands, or the centre never filled. Starting a new spine.",
+          lastPreview,
+        );
+        await yieldToUi();
+      }
+      continue;
+    }
+    const preview = previewFromLevel(level);
+    const nGold = level.targets?.length ?? 0;
+    const nCards = (level.fixed?.length ?? 0) + nGold;
     if (i % 6 === 0) {
-      report("Checking unique seats", i + 1, `${level.targets?.length ?? 0} gold on the table`);
+      report(
+        "Stress-testing gold seats",
+        i + 1,
+        `${nCards} cards, ${nGold} gold. Checking that no two hand cards can swap chairs.`,
+        preview,
+      );
       await yieldToUi();
     }
-    if (isValidLevel(level)) {
-      report("Table locked in", i + 1, `${level.targets?.length ?? 0} gold seats`);
+    const issues = decide(level);
+    if (!issues.length) {
+      report("Table locked in", i + 1, `${nGold} gold seats. Each hand card has one correct place.`, preview);
       return level;
+    }
+    easeHand();
+    if (i % 6 === 0) {
+      report(
+        "Throwing this crossword back",
+        i + 1,
+        `${explainIssue(issues[0]!)} Next hand is ${goldGoal} gold.`,
+        preview,
+      );
+      await yieldToUi();
     }
   }
 
@@ -884,20 +1023,38 @@ export async function makeProceduralLevel(
   );
   const minCardsFloor = Math.max(cfg.targetMin + 2, Math.floor(cfg.minCards * 0.85));
   for (const d of fallback) {
-    report("Trying a denser cut", 0, `still need ≥${minTargets} gold`);
+    report(
+      "Primary recipes were stubborn",
+      0,
+      `Loosening the mix (${d} patterns) while still aiming for at least ${minTargets} gold and ${minCardsFloor}+ cards.`,
+      lastPreview,
+    );
     await yieldToUi();
     for (let i = 0; i < 120; i++) {
       if (i % 8 === 0) {
-        report("Reseating the regulars", i + 1);
+        report(
+          "Reseating the regulars",
+          i + 1,
+          `Trying a denser cut with ${d} hands — ${goldGoal} gold, unique seats only.`,
+          lastPreview,
+        );
         await yieldToUi();
       }
-      const level = attemptLevel(d, table);
-      if (!level || !isValidLevel(level)) continue;
+      const level = attemptLevel(d, table, draft, goldGoal);
+      if (!level) {
+        easeHand();
+        continue;
+      }
+      const preview = previewFromLevel(level);
+      const issues = decide(level);
+      if (issues.length) {
+        easeHand();
+        continue;
+      }
       const cards = (level.fixed?.length ?? 0) + (level.targets?.length ?? 0);
       if ((level.targets?.length ?? 0) < minTargets) continue;
       if (cards < minCardsFloor) continue;
-      const label = difficulty[0].toUpperCase() + difficulty.slice(1);
-      report("Table locked in", i + 1, `${level.targets?.length ?? 0} gold seats`);
+      report("Table locked in", i + 1, `${level.targets?.length ?? 0} gold seats after a denser cut.`, preview);
       return {
         ...level,
         id: `endless-${difficulty}-${table}-${Date.now().toString(36)}`,
@@ -919,26 +1076,39 @@ export async function makeProceduralLevel(
     Math.floor(cfg.minCards * 0.7),
   );
   if (difficulty !== "beginner") {
-    report("Holding out for a proper table", 0, `≥${stubbornFloor} gold`);
+    report(
+      "Holding out for a proper table",
+      0,
+      `I will not deal a thin pair. Still need ≥${stubbornFloor} gold on ≥${stubbornCards} cards.`,
+      lastPreview,
+    );
     for (let wave = 0; wave < 10; wave++) {
       for (let i = 0; i < 120; i++) {
         if (i % 10 === 0) {
           report(
             "One more shuffle",
             wave * 120 + i + 1,
-            `still need ≥${stubbornFloor} gold`,
+            `Wave ${wave + 1}. ${goldGoal} gold seats this shuffle.`,
+            lastPreview,
           );
           await yieldToUi();
         }
         const d: Difficulty =
           fallback.length && i % 3 === 2 ? fallback[0]! : difficulty;
-        const level = attemptLevel(d, table);
-        if (!level || !isValidLevel(level)) continue;
+        const level = attemptLevel(d, table, draft, goldGoal);
+        if (!level) {
+          easeHand();
+          continue;
+        }
+        const issues = decide(level);
+        if (issues.length) {
+          easeHand();
+          continue;
+        }
         const n = level.targets?.length ?? 0;
         const cards = (level.fixed?.length ?? 0) + n;
         if (n < stubbornFloor || cards < stubbornCards) continue;
-        const label = difficulty[0].toUpperCase() + difficulty.slice(1);
-        report("Table locked in", wave * 120 + i + 1, `${n} gold seats`);
+        report("Table locked in", wave * 120 + i + 1, `${n} gold seats. Unique chairs.`, previewFromLevel(level));
         return {
           ...level,
           id: `endless-${difficulty}-${table}-${Date.now().toString(36)}`,
@@ -950,23 +1120,35 @@ export async function makeProceduralLevel(
   }
 
   if (difficulty === "beginner") {
-    report("Fallback pair", 0, "the deck was stubborn");
+    report("Fallback pair", 0, "The deck was stubborn. Seating a centre pair so you can still play.");
     return minimalCentrePair(difficulty, table);
   }
 
-  report("Building a denser fallback", 0, `≥${stubbornFloor} gold`);
+  report(
+    "Building a denser fallback",
+    0,
+    `Last search pass — still need ≥${stubbornFloor} gold, unique seats only.`,
+    lastPreview,
+  );
   for (let i = 0; i < 400; i++) {
     if (i % 15 === 0) {
-      report("Building a denser fallback", i + 1);
+      report("Building a denser fallback", i + 1, `Attempt ${i + 1}. Preferring packed pairs and trips.`, lastPreview);
       await yieldToUi();
     }
     const d: Difficulty = fallback[0] ?? difficulty;
-    const level = attemptLevel(d, table);
-    if (!level || !isValidLevel(level)) continue;
+    const level = attemptLevel(d, table, draft, goldGoal);
+    if (!level) {
+      easeHand();
+      continue;
+    }
+    const issues = decide(level);
+    if (issues.length) {
+      easeHand();
+      continue;
+    }
     const n = level.targets?.length ?? 0;
     if (n < stubbornFloor) continue;
-    const label = difficulty[0].toUpperCase() + difficulty.slice(1);
-    report("Table locked in", i + 1, `${n} gold seats`);
+    report("Table locked in", i + 1, `${n} gold seats on the fallback cut.`, previewFromLevel(level));
     return {
       ...level,
       id: `endless-${difficulty}-${table}-${Date.now().toString(36)}`,
@@ -975,8 +1157,21 @@ export async function makeProceduralLevel(
     };
   }
 
-  report("Building a guaranteed table", 0, `≥${stubbornFloor} gold`);
-  return denseGuaranteedLevel(difficulty, table, stubbornFloor);
+  report(
+    "Building a guaranteed table",
+    0,
+    `Procedural search gave up. Laying connected pairs and trips with at most one gold per rank so nothing can swap.`,
+    lastPreview,
+  );
+  await yieldToUi();
+  const guaranteed = denseGuaranteedLevel(difficulty, table, stubbornFloor);
+  report(
+    "Table locked in",
+    0,
+    `${guaranteed.targets?.length ?? 0} gold seats on a guaranteed connected table.`,
+    previewFromLevel(guaranteed),
+  );
+  return guaranteed;
 }
 
 function yieldToUi(): Promise<void> {
@@ -1432,27 +1627,77 @@ export function isValidLevel(level: Level): boolean {
   return levelIssues(level).length === 0;
 }
 
-/** A connected crossword of scoring cards — used as the Free Play deal. */
-export function makeScoringDeal(): RS[] {
-  const diffs: Difficulty[] = ["beginner", "easy", "medium"];
-  for (let i = 0; i < 80; i++) {
-    const level = attemptLevel(diffs[i % diffs.length], 1);
-    if (!level) continue;
-    const cards: RS[] = [
-      ...(level.fixed ?? []).map(({ rank, suit }) => ({ rank, suit })),
-      ...level.hand,
-    ];
-    if (cards.length >= 8) return fisherYates(cards).slice(0, Math.min(12, cards.length));
+/** Compact connected crossword of 8–12 scoring cards for Free Play. */
+function compactScoringOccupied(): Map<string, RS> | null {
+  const deck: RS[] = fisherYates(SUITS.flatMap((suit) => RANKS.map((rank) => ({ rank, suit }))));
+  const occupied = new Map<string, RS>();
+  const spines = fisherYates(["flush", "straight", "fullHouse", "twoPair", "three"] as Recipe[]);
+  const spineRecipe = spines[0] ?? "flush";
+  const spineLen = recipeLen(spineRecipe);
+  const spineAxis: "row" | "col" = Math.random() < 0.5 ? "row" : "col";
+  let spineCells = placeCells(spineLen, occupied, null, spineAxis);
+  if (!spineCells || !spineCells.some((p) => p.r === CENTRE && p.c === CENTRE)) {
+    if (spineAxis === "row") {
+      const minC = Math.max(0, CENTRE - (spineLen - 1));
+      const maxC = Math.min(CENTRE, BOARD_SIZE - spineLen);
+      if (minC > maxC) return null;
+      const c0 = minC + Math.floor(Math.random() * (maxC - minC + 1));
+      spineCells = Array.from({ length: spineLen }, (_, i) => ({ r: CENTRE, c: c0 + i }));
+    } else {
+      const minR = Math.max(0, CENTRE - (spineLen - 1));
+      const maxR = Math.min(CENTRE, BOARD_SIZE - spineLen);
+      if (minR > maxR) return null;
+      const r0 = minR + Math.floor(Math.random() * (maxR - minR + 1));
+      spineCells = Array.from({ length: spineLen }, (_, i) => ({ r: r0 + i, c: CENTRE }));
+    }
   }
+  const spineCards = buildHand(spineRecipe, spineLen, deck, null, 0);
+  if (!spineCards) return null;
+  spineCells.forEach((p, i) => occupied.set(key(p.r, p.c), spineCards[i]));
+
+  const want = 8 + Math.floor(Math.random() * 5);
+  const grafts: Recipe[] = ["pair", "pair", "three", "twoPair", "pair", "three"];
+  let guard = 0;
+  while (occupied.size < want && guard++ < 50) {
+    const room = want - occupied.size;
+    const fit = grafts.filter((r) => recipeLen(r) - 1 <= room);
+    if (!fit.length) break;
+    if (!graftOneRun(occupied, deck, fisherYates(fit))) break;
+  }
+
+  if (occupied.size < 8 || occupied.size > 12) return null;
+  const cells = [...occupied.keys()].map((k) => {
+    const [r, c] = k.split(",").map(Number);
+    return { r, c };
+  });
+  if (!occupied.has(key(CENTRE, CENTRE)) || !cardCellsConnected(cells)) return null;
+  const blocked = new Set(neededStops(occupied).map((p) => key(p.r, p.c)));
+  if (!everyCardInValidHand(occupied, blocked)) return null;
+  return occupied;
+}
+
+function guaranteedPairDeal(): RS[] {
   const deck: RS[] = fisherYates(SUITS.flatMap((suit) => RANKS.map((rank) => ({ rank, suit }))));
   const out: RS[] = [];
-  const pair = takeMatching(deck, (c) => c.rank === "A", 2);
-  const trips = takeMatching(deck, (c) => c.rank === "K", 3);
-  const two = takeMatching(deck, (c) => c.rank === "9", 2);
-  const two2 = takeMatching(deck, (c) => c.rank === "5", 2);
-  if (pair) out.push(...pair);
-  if (trips) out.push(...trips);
-  if (two) out.push(...two);
-  if (two2) out.push(...two2);
-  return out.length ? out : deck.slice(0, 12);
+  for (const rank of fisherYates([...RANKS])) {
+    if (out.length >= 10) break;
+    const pair = takeMatching(deck, (c) => c.rank === rank, 2);
+    if (pair) out.push(...pair);
+  }
+  return out.length >= 8 ? out : deck.slice(0, 10);
 }
+
+/**
+ * Free Play hand: every card belongs to a known connected crossword of
+ * scoring poker hands (pairs grafted onto a flush/straight/full-house spine,
+ * etc.). We deal the whole layout — never a random slice — so nothing is left
+ * without a scoring seat (the old 12-card slice produced orphan Aces/3s).
+ */
+export function makeScoringDeal(): RS[] {
+  for (let i = 0; i < 100; i++) {
+    const layout = compactScoringOccupied();
+    if (layout) return fisherYates([...layout.values()]);
+  }
+  return guaranteedPairDeal();
+}
+

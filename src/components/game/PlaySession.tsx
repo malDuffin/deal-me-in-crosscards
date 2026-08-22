@@ -11,7 +11,7 @@ import {
 } from "react";
 import gsap from "gsap";
 import { makeCard } from "@/lib/game/deck";
-import { makeProceduralLevel, neededStops } from "@/lib/game/endless";
+import { makeProceduralLevel, neededStops, type GenProgress } from "@/lib/game/endless";
 import { findLevel, nextLevel } from "@/lib/game/levels";
 import { getTable } from "@/lib/game/editor-store";
 import { decodeLevel, levelShareUrl } from "@/lib/game/share";
@@ -29,7 +29,7 @@ import { boardDealIn, cardSwapFly, dealIn, flyInFromOffscreen, flyOutStopRects, 
 import { WaitOverlay } from "@/components/game/WaitOverlay";
 import { cellKey, collectOccupiedRuns, scanBoard, totalScore } from "@/lib/game/poker";
 import { recordScore } from "@/lib/game/progress";
-import { useSettings } from "@/lib/game/settings";
+import { feltDropShadow, useSettings } from "@/lib/game/settings";
 import {
   BOARD_PAD,
   BOARD_RAIL,
@@ -372,13 +372,25 @@ export function PlaySession({
   const [dealKey, setDealKey] = useState(0);
   const [endlessLevel, setEndlessLevel] = useState<Level | null>(null);
   const [endlessLoading, setEndlessLoading] = useState(campaign === "endless");
-  const [genStatus, setGenStatus] = useState<string | null>(null);
+  const [genProgress, setGenProgress] = useState<GenProgress | null>(
+    campaign === "endless"
+      ? {
+          phase: "Hold please",
+          attempt: 0,
+          detail: "Waiting until this panel is fully on the felt. Then I'll shuffle a table.",
+        }
+      : null,
+  );
   const [tableNo, setTableNo] = useState(1);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const cardStyle = useSettings((s) => s.cardStyle);
   const muted = useSettings((s) => s.muted);
   const setMuted = useSettings((s) => s.setMuted);
+  const boardShadows = useSettings((s) => s.boardShadows);
+  const shadowDistance = useSettings((s) => s.shadowDistance);
+  const shadowOpacity = useSettings((s) => s.shadowOpacity);
+  const placedShadow = feltDropShadow(boardShadows, shadowDistance, shadowOpacity);
   const nextCache = useRef<{ n: number; difficulty: Difficulty; level: Level } | null>(null);
 
   const staticLevel = useMemo(
@@ -402,6 +414,32 @@ export function PlaySession({
   const customLevel = share ? sharedLevel : savedLevel;
   const level = campaign === "endless" ? endlessLevel : campaign === "custom" ? customLevel : staticLevel;
 
+  const overlayReadyRef = useRef(false);
+  const overlayWaiterRef = useRef<(() => void) | null>(null);
+  const loadingUiRef = useRef(campaign === "endless");
+  const genSeq = useRef(0);
+
+  const markOverlayReady = useCallback(() => {
+    overlayReadyRef.current = true;
+    overlayWaiterRef.current?.();
+    overlayWaiterRef.current = null;
+  }, []);
+
+  const waitForOverlay = () => {
+    if (overlayReadyRef.current) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        overlayWaiterRef.current = null;
+        resolve();
+      };
+      overlayWaiterRef.current = finish;
+      window.setTimeout(finish, 520);
+    });
+  };
+
   const loadEndless = useCallback(
     async (n: number) => {
       const cached = nextCache.current;
@@ -409,28 +447,45 @@ export function PlaySession({
       setTableNo(n);
       if (hit && cached) {
         nextCache.current = null;
+        loadingUiRef.current = false;
         setEndlessLevel(cached.level);
         setEndlessLoading(false);
-        setGenStatus(null);
+        setGenProgress(null);
         void makeProceduralLevel(difficulty, n + 1).then((lvl) => {
           nextCache.current = { n: n + 1, difficulty, level: lvl };
         });
         return;
       }
+      const seq = ++genSeq.current;
+      const remountPanel = !loadingUiRef.current;
+      loadingUiRef.current = true;
+      if (remountPanel) overlayReadyRef.current = false;
       setEndlessLoading(true);
       setEndlessLevel(null);
-      setGenStatus("Shuffling the deck…");
+      setGenProgress({
+        phase: "Hold please",
+        attempt: 0,
+        detail: "Waiting until this panel is fully on the felt. Then I'll shuffle a table.",
+      });
+      await waitForOverlay();
+      if (seq !== genSeq.current) return;
       try {
         const lvl = await makeProceduralLevel(difficulty, n, (p) => {
-          setGenStatus(p.detail ? `${p.phase} — ${p.detail}` : p.phase);
+          if (seq !== genSeq.current) return;
+          setGenProgress(p);
         });
+        if (seq !== genSeq.current) return;
+        loadingUiRef.current = false;
         setEndlessLevel(lvl);
-        setGenStatus(null);
+        setGenProgress(null);
         void makeProceduralLevel(difficulty, n + 1).then((next) => {
           nextCache.current = { n: n + 1, difficulty, level: next };
         });
       } finally {
-        setEndlessLoading(false);
+        if (seq === genSeq.current) {
+          loadingUiRef.current = false;
+          setEndlessLoading(false);
+        }
       }
     },
     [difficulty],
@@ -731,9 +786,14 @@ export function PlaySession({
     if (!pendingWin.current) return;
     if (pendingFloats.current > 0) return;
     pendingWin.current = false;
+    const nxt = campaign === "training" && level ? nextLevel(level) : null;
+    if (nxt) {
+      void navigate({ to: "/play", search: { mode: nxt.campaign, id: nxt.id } });
+      return;
+    }
     setShowWinUi(true);
     playWin();
-  }, []);
+  }, [campaign, level, navigate]);
 
   const spawnFloats = useCallback(
     (fresh: DetectedHand[]) => {
@@ -859,8 +919,8 @@ export function PlaySession({
     const boardW = grid * CELL_W + (grid - 1) * CELL_GAP + BOARD_PAD * 2 + BOARD_RAIL * 2;
     const boardH = grid * CELL_H + (grid - 1) * CELL_GAP + BOARD_PAD * 2 + BOARD_RAIL * 2;
     const measure = () => {
-      const availW = Math.max(1, wrap.clientWidth - 4);
-      const availH = Math.max(1, wrap.clientHeight - 4);
+      const availW = Math.max(1, wrap.clientWidth);
+      const availH = Math.max(1, wrap.clientHeight);
       const s = Math.min(availW / boardW, availH / boardH);
       setScale(Number.isFinite(s) && s > 0 ? s : 0.4);
     };
@@ -1291,7 +1351,12 @@ export function PlaySession({
   if (campaign === "endless" && (endlessLoading || !level)) {
     return (
       <div className="felt-bg relative h-dvh">
-        <WaitOverlay show status={genStatus} />
+        <WaitOverlay
+          show
+          variant="builder"
+          progress={genProgress}
+          onReady={markOverlayReady}
+        />
       </div>
     );
   }
@@ -1382,7 +1447,7 @@ export function PlaySession({
         </div>
       </header>
 
-      <div ref={stageRef} className="relative z-10 mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col overflow-hidden px-2 pb-2">
+      <div ref={stageRef} className="relative z-10 mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col overflow-hidden px-0 pb-2 sm:px-3">
         <div className="mb-1 flex shrink-0 items-start justify-between gap-3 px-1">
           <p className="min-w-0 flex-1 text-xs leading-snug text-fg-muted sm:text-sm">
             {toast || level.briefing}
@@ -1416,7 +1481,7 @@ export function PlaySession({
               }}
             >
             <div
-              className="rounded-[18px] border-rail bg-felt shadow-[inset_0_0_40px_rgba(0,0,0,0.45)]"
+              className="rounded-md border-board-rim bg-felt shadow-[inset_0_0_28px_rgba(0,0,0,0.4)]"
               style={{ borderWidth: BOARD_RAIL, padding: BOARD_PAD }}
             >
               <div
@@ -1512,7 +1577,9 @@ export function PlaySession({
                           onPointerCancel={onPointerUp}
                           disabled={card.fixed}
                         >
-                          <CardFace card={card} dimmed={card.fixed} style={cardStyle} />
+                          <div className="h-full w-full" style={{ filter: placedShadow }}>
+                            <CardFace card={card} dimmed={card.fixed} style={cardStyle} />
+                          </div>
                         </button>
                       ) : null}
                     </div>
@@ -1649,6 +1716,7 @@ export function PlaySession({
             width: CELL_W * scale,
             height: CELL_H * scale,
             fontSize: Math.max(8, 11 * scale),
+            filter: placedShadow,
           }}
         >
           <CardFace card={dragCard} tray style={cardStyle} className="bg-gold" />
