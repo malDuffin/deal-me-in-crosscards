@@ -92,12 +92,12 @@ async function askPuzzle(
 ): Promise<Level | null> {
   const hint =
     difficulty === "easy"
-      ? "3-4 hand cards, pairs and three of a kind, few blockers."
+      ? "11–15 gold seats on a near-full ~48–52 card board, pairs / three of a kind / two pair."
       : difficulty === "medium"
-        ? "5-7 hand cards, mix of pairs, threes, a straight or two pair, some blockers."
+        ? "12–17 gold seats on a ~48–52 card board, mix of pairs, threes, straight or two pair."
         : difficulty === "hard"
-          ? "8-11 hand cards, include a flush or full house, denser blockers."
-          : "11-14 hand cards, overlapping crossword-style runs, many blockers.";
+          ? "16–25 gold seats on a ~48–52 card board, include a flush or full house, interlocking runs."
+          : "22–26 gold seats on a full ~46–52 card board, denser gold than fixed, four of a kind OK.";
 
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), AI_TIMEOUT_MS);
@@ -127,7 +127,7 @@ Rules:
 - unique 52-card deck: no duplicate rank+suit anywhere
 - no overlapping cells among fixed, targets, blocked
 - hand is the exact multiset of cards sitting on targets
-- at least 3 gold target seats
+- gold seats matching the difficulty hint (unique solution: each hand card has one correct seat)
 fixed = already on the board. targets = gold empty seats. blocked = unplayable cells.
 JSON shape:
 {"name":"short title","briefing":"one sentence hint","blocked":[{"r":0,"c":0}],"fixed":[{"r":0,"c":1,"rank":"A","suit":"S"}],"hand":[{"rank":"A","suit":"H"}],"targets":[{"r":0,"c":2,"rank":"A","suit":"H"}]}`,
@@ -155,7 +155,7 @@ export const generateEndlessLevel = createServerFn({ method: "POST" })
     return { difficulty, table };
   })
   .handler(async ({ data }) => {
-    const fallback = makeProceduralLevel(data.difficulty, data.table);
+    const fallback = await makeProceduralLevel(data.difficulty, data.table);
     const apiKey = process.env.XAI_API_KEY;
     if (!apiKey) return { ok: true as const, level: fallback, source: "local" as const };
 

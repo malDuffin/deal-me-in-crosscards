@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { X } from "lucide-react";
 import gsap from "gsap";
 import { applyAudioPrefs, unlockAudio } from "@/lib/game/audio";
 import { prefersReducedMotion } from "@/lib/game/juice";
@@ -81,9 +82,19 @@ export function SettingsSheet({ open, onClose }: { open: boolean; onClose: () =>
         ref={sheetRef}
         className="glass max-h-[min(92dvh,680px)] w-full max-w-md overflow-y-auto rounded-t-[28px] p-5 pb-10 sm:rounded-[28px]"
       >
-        <h2 className="mb-4 text-center font-display text-xl font-semibold tracking-tight">
-          Settings
-        </h2>
+        <div className="relative mb-4">
+          <h2 className="text-center font-display text-xl font-semibold tracking-tight">
+            Settings
+          </h2>
+          <button
+            type="button"
+            className="absolute right-0 top-1/2 inline-flex size-10 -translate-y-1/2 items-center justify-center rounded-xl text-fg-muted transition-transform duration-150 ease-out hover:bg-fg/5 hover:text-fg active:scale-[0.96]"
+            aria-label="Close settings"
+            onClick={onClose}
+          >
+            <X className="size-5" />
+          </button>
+        </div>
 
         <p className="mb-2 text-[11px] uppercase tracking-[0.16em] text-fg-subtle">Card style</p>
         <div className="mb-5 flex flex-col gap-2">
@@ -103,7 +114,7 @@ export function SettingsSheet({ open, onClose }: { open: boolean; onClose: () =>
               )}
             >
               <span className="h-12 w-[34px] shrink-0" style={{ fontSize: 11 }}>
-                <CardFace card={SAMPLE} style={s.id} tray />
+                <CardFace card={{ ...SAMPLE, fixed: true }} style={s.id} />
               </span>
               <span>
                 <span className="block font-medium">{s.name}</span>

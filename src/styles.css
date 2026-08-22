@@ -111,10 +111,157 @@
 }
 
 .slot-mark {
-  background:
-    linear-gradient(180deg, color-mix(in oklab, #e8c547 28%, transparent), transparent 70%),
-    var(--color-cell);
-  box-shadow: inset 0 0 0 1px color-mix(in oklab, #e8c547 55%, transparent);
+  background: color-mix(in oklab, #e8c547 52%, var(--color-cell));
+  box-shadow:
+    inset 0 0 0 1.5px color-mix(in oklab, #e8c547 88%, #fff),
+    0 0 8px 1px color-mix(in oklab, #e8c547 48%, transparent);
+  animation: slot-glow 1.7s ease-in-out infinite;
+}
+
+@keyframes slot-glow {
+  0%,
+  100% {
+    background: color-mix(in oklab, #e8c547 46%, var(--color-cell));
+    box-shadow:
+      inset 0 0 0 1.5px color-mix(in oklab, #e8c547 78%, #fff),
+      0 0 6px 0 color-mix(in oklab, #e8c547 40%, transparent);
+  }
+  50% {
+    background: color-mix(in oklab, #f0d56a 68%, var(--color-cell));
+    box-shadow:
+      inset 0 0 0 2px color-mix(in oklab, #ffe38a 95%, #fff),
+      0 0 14px 3px color-mix(in oklab, #e8c547 72%, transparent);
+  }
+}
+
+@keyframes cta-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--color-cream) 0%, transparent);
+  }
+  50% {
+    transform: scale(1.035);
+    box-shadow: 0 0 0 6px color-mix(in oklab, var(--color-cream) 22%, transparent);
+  }
+}
+
+.cta-pulse {
+  animation: cta-pulse 1.8s ease-in-out infinite;
+}
+
+.cta-pulse:hover,
+.cta-pulse:active {
+  animation: none;
+}
+
+.guide-arrow {
+  fill: none;
+  stroke: #e8c547;
+  stroke-width: 2.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 11 9;
+  animation: guide-dash 0.55s linear infinite;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.55));
+}
+
+@keyframes guide-dash {
+  to {
+    stroke-dashoffset: -20;
+  }
+}
+
+.cross-mascot {
+  width: clamp(4.4rem, 11dvh, 6.6rem);
+  height: auto;
+  flex-shrink: 0;
+  overflow: visible;
+}
+
+.cross-mascot-bob {
+  transform-origin: 40px 108px;
+  animation: mascot-huff 2.4s ease-in-out infinite;
+}
+
+.cross-mascot-brow {
+  transform-origin: 40px 42px;
+  animation: mascot-brow 1.8s ease-in-out infinite;
+}
+
+.cross-mascot-hat {
+  transform-origin: 40px 24px;
+  animation: mascot-hat 2.4s ease-in-out infinite;
+}
+
+.cross-mascot-bell {
+  transform-box: fill-box;
+  transform-origin: 50% 50%;
+  animation: mascot-bell 0.7s ease-in-out infinite;
+}
+
+.cross-mascot-lid {
+  transform-box: fill-box;
+  transform-origin: 50% 0%;
+  animation: mascot-blink 3.2s ease-in-out infinite;
+}
+
+@keyframes mascot-huff {
+  0%,
+  100% {
+    transform: rotate(-3deg) translateY(0);
+  }
+  40% {
+    transform: rotate(2.5deg) translateY(-3px);
+  }
+  55% {
+    transform: rotate(2deg) translateY(-1px);
+  }
+  70% {
+    transform: rotate(-2deg) translateY(1px);
+  }
+}
+
+@keyframes mascot-brow {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  45% {
+    transform: translateY(2px);
+  }
+}
+
+@keyframes mascot-hat {
+  0%,
+  100% {
+    transform: rotate(-4deg);
+  }
+  50% {
+    transform: rotate(5deg);
+  }
+}
+
+@keyframes mascot-bell {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(1.4px);
+  }
+}
+
+@keyframes mascot-blink {
+  0%,
+  86%,
+  94%,
+  100% {
+    transform: scaleY(0);
+  }
+  90% {
+    transform: scaleY(1);
+  }
 }
 
 @keyframes teach-mark-breathe {
@@ -171,7 +318,15 @@
 @media (prefers-reduced-motion: reduce) {
   .teach-mark,
   .teach-outline-ok,
-  .teach-outline-bad {
+  .teach-outline-bad,
+  .slot-mark,
+  .guide-arrow,
+  .cta-pulse,
+  .cross-mascot-bob,
+  .cross-mascot-brow,
+  .cross-mascot-lid,
+  .cross-mascot-hat,
+  .cross-mascot-bell {
     animation: none;
   }
 }

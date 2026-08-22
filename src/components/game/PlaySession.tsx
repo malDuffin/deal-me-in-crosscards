@@ -1,5 +1,5 @@
 import { Link, useNavigate } from "@tanstack/react-router";
-import { Check, ChevronLeft, RotateCcw, Settings2, Share2, Undo2, Volume2, VolumeX, X } from "lucide-react";
+import { Check, ChevronLeft, RotateCcw, Settings, Share2, Undo2, Volume2, VolumeX, X } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -26,6 +26,7 @@ import {
   unlockAudio,
 } from "@/lib/game/audio";
 import { boardDealIn, cardSwapFly, dealIn, flyInFromOffscreen, flyOutStopRects, placePop, rejectFlyHome, scatterElements, selectPulse, teachMarkIn, trayReorg } from "@/lib/game/juice";
+import { WaitOverlay } from "@/components/game/WaitOverlay";
 import { cellKey, collectOccupiedRuns, scanBoard, totalScore } from "@/lib/game/poker";
 import { recordScore } from "@/lib/game/progress";
 import { useSettings } from "@/lib/game/settings";
@@ -242,6 +243,120 @@ function midpoint(cells: Cell[]): { x: number; y: number } {
   return { x: n ? x / n : window.innerWidth / 2, y: n ? y / n : window.innerHeight / 3 };
 }
 
+/** Dashed marching-ants arrow from a tray/dragged card to its gold seat. */
+function GuideArrows({
+  active,
+  cardIds,
+  targets,
+  drag,
+  scale,
+}: {
+  active: boolean;
+  cardIds: string[];
+  targets: Record<string, Cell>;
+  drag: DragState | null;
+  scale: number;
+}) {
+  const [paths, setPaths] = useState<{ id: string; d: string }[]>([]);
+
+  useLayoutEffect(() => {
+    if (!active || !cardIds.length) {
+      setPaths([]);
+      return;
+    }
+
+    const curve = (x1: number, y1: number, x2: number, y2: number, fan: number) => {
+      const dx = x2 - x1;
+      const dy = y2 - y1;
+      const len = Math.hypot(dx, dy) || 1;
+      const ux = dx / len;
+      const uy = dy / len;
+      const nx = -uy;
+      const ny = ux;
+      const bow = Math.min(72, len * 0.22) + fan;
+      const c1x = x1 + dx * 0.28 + nx * bow * 0.4;
+      const c1y = y1 + dy * 0.28 + ny * bow * 0.4;
+      const back = Math.min(40, len * 0.3);
+      const c2x = x2 - ux * back + nx * fan * 0.25;
+      const c2y = y2 - uy * back + ny * fan * 0.25;
+      const tip = Math.min(12, len * 0.1);
+      const ex = x2 - ux * tip;
+      const ey = y2 - uy * tip;
+      return `M ${x1.toFixed(1)} ${y1.toFixed(1)} C ${c1x.toFixed(1)} ${c1y.toFixed(1)}, ${c2x.toFixed(1)} ${c2y.toFixed(1)}, ${ex.toFixed(1)} ${ey.toFixed(1)}`;
+    };
+
+    const measure = () => {
+      const next: { id: string; d: string }[] = [];
+      const n = cardIds.length;
+      cardIds.forEach((id, i) => {
+        const dest = targets[id];
+        if (!dest) return;
+        const toEl = document.querySelector<HTMLElement>(`[data-r="${dest.r}"][data-c="${dest.c}"]`);
+        if (!toEl) return;
+        const b = toEl.getBoundingClientRect();
+        if (b.width < 2) return;
+        const x2 = b.left + b.width / 2;
+        const y2 = b.top + b.height / 2;
+        let x1: number;
+        let y1: number;
+        if (drag && drag.id === id) {
+          const w = CELL_W * scale;
+          const h = CELL_H * scale;
+          x1 = drag.x - drag.grabX + w / 2;
+          y1 = drag.y - drag.grabY + h / 2;
+        } else {
+          const fromEl = document.querySelector<HTMLElement>(`[data-tray] [data-card-id="${id}"]`);
+          if (!fromEl) return;
+          const a = fromEl.getBoundingClientRect();
+          if (a.width < 2) return;
+          x1 = a.left + a.width / 2;
+          y1 = a.top + 4;
+        }
+        const fan = (i - (n - 1) / 2) * 36;
+        next.push({ id, d: curve(x1, y1, x2, y2, fan) });
+      });
+      setPaths(next);
+    };
+
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [active, cardIds, targets, drag, scale]);
+
+  if (!active || !paths.length) return null;
+  return (
+    <svg
+      className="pointer-events-none fixed inset-0 z-[45]"
+      width="100%"
+      height="100%"
+      aria-hidden="true"
+    >
+      <defs>
+        <marker
+          id="guide-arrow-head"
+          viewBox="0 0 10 10"
+          refX="9"
+          refY="5"
+          markerWidth="8"
+          markerHeight="8"
+          orient="auto"
+          markerUnits="strokeWidth"
+        >
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#e8c547" />
+        </marker>
+      </defs>
+      {paths.map((p) => (
+        <path
+          key={p.id}
+          d={p.d}
+          className="guide-arrow"
+          markerEnd="url(#guide-arrow-head)"
+        />
+      ))}
+    </svg>
+  );
+}
+
 export function PlaySession({
   campaign,
   levelId,
@@ -255,9 +370,9 @@ export function PlaySession({
 }) {
   const navigate = useNavigate();
   const [dealKey, setDealKey] = useState(0);
-  const [endlessLevel, setEndlessLevel] = useState<Level | null>(() =>
-    campaign === "endless" ? makeProceduralLevel(difficulty, 1) : null,
-  );
+  const [endlessLevel, setEndlessLevel] = useState<Level | null>(null);
+  const [endlessLoading, setEndlessLoading] = useState(campaign === "endless");
+  const [genStatus, setGenStatus] = useState<string | null>(null);
   const [tableNo, setTableNo] = useState(1);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
@@ -288,40 +403,45 @@ export function PlaySession({
   const level = campaign === "endless" ? endlessLevel : campaign === "custom" ? customLevel : staticLevel;
 
   const loadEndless = useCallback(
-    (n: number) => {
+    async (n: number) => {
       const cached = nextCache.current;
       const hit = !!(cached && cached.n === n && cached.difficulty === difficulty);
       setTableNo(n);
-      const next = hit && cached ? cached.level : makeProceduralLevel(difficulty, n);
-      if (hit) nextCache.current = null;
-      setEndlessLevel(next);
-      window.setTimeout(() => {
-        nextCache.current = {
-          n: n + 1,
-          difficulty,
-          level: makeProceduralLevel(difficulty, n + 1),
-        };
-      }, 40);
+      if (hit && cached) {
+        nextCache.current = null;
+        setEndlessLevel(cached.level);
+        setEndlessLoading(false);
+        setGenStatus(null);
+        void makeProceduralLevel(difficulty, n + 1).then((lvl) => {
+          nextCache.current = { n: n + 1, difficulty, level: lvl };
+        });
+        return;
+      }
+      setEndlessLoading(true);
+      setEndlessLevel(null);
+      setGenStatus("Shuffling the deck…");
+      try {
+        const lvl = await makeProceduralLevel(difficulty, n, (p) => {
+          setGenStatus(p.detail ? `${p.phase} — ${p.detail}` : p.phase);
+        });
+        setEndlessLevel(lvl);
+        setGenStatus(null);
+        void makeProceduralLevel(difficulty, n + 1).then((next) => {
+          nextCache.current = { n: n + 1, difficulty, level: next };
+        });
+      } finally {
+        setEndlessLoading(false);
+      }
     },
     [difficulty],
   );
 
-  const endlessBoot = useRef(false);
   useEffect(() => {
     nextCache.current = null;
     if (campaign !== "endless") return;
-    if (!endlessBoot.current) {
-      endlessBoot.current = true;
-      window.setTimeout(() => {
-        nextCache.current = {
-          n: 2,
-          difficulty,
-          level: makeProceduralLevel(difficulty, 2),
-        };
-      }, 40);
-      return;
-    }
-    loadEndless(1);
+    setEndlessLevel(null);
+    const t = window.setTimeout(() => loadEndless(1), 0);
+    return () => window.clearTimeout(t);
   }, [campaign, loadEndless, difficulty]);
 
   const built = useMemo(
@@ -362,6 +482,11 @@ export function PlaySession({
   const bounceTimer = useRef<number | null>(null);
   const bounceHomeRef = useRef<(ids: string[], before: Map<string, DOMRect>) => void>(() => {});
   const [shownSig, setShownSig] = useState("");
+  const [holdPlease, setHoldPlease] = useState(true);
+  const prevFeltRef = useRef<{ cards: Map<string, { rank: Rank; suit: Suit }>; stops: Set<string> }>({
+    cards: new Map(),
+    stops: new Set(),
+  });
 
   const targetKeys = useMemo(() => {
     const s = new Set<string>();
@@ -372,6 +497,12 @@ export function PlaySession({
   placementsRef.current = placements;
   const tableSig = `${level?.id ?? ""}:${campaign}`;
   const awaitingDeal = shownSig !== tableSig;
+  const feltStay = (r: number, c: number, rank?: Rank, suit?: Suit) => {
+    if (campaign !== "training" || !awaitingDeal) return false;
+    const prev = prevFeltRef.current.cards.get(`${r},${c}`);
+    return !!prev && !!rank && !!suit && prev.rank === rank && prev.suit === suit;
+  };
+  const stopStay = (k: string) => campaign === "training" && awaitingDeal && prevFeltRef.current.stops.has(k);
 
   const scanPlacements = useMemo(() => {
     if (!drag) return placements;
@@ -380,8 +511,10 @@ export function PlaySession({
     return copy;
   }, [placements, drag]);
 
-  /** Live caps from the cards currently on the felt — lift one and leftover stops fly off. */
+  /** Live caps from the cards currently on the felt — lift one and leftover stops fly off.
+   *  How to Play uses the authored stops only; the demo "wrong" hands must not grow signs. */
   const blocked = useMemo(() => {
+    if (campaign === "howto") return built.blocked;
     const occupied = new Map<string, { rank: Rank; suit: Suit }>();
     for (const c of cards) {
       const p = scanPlacements[c.id];
@@ -394,7 +527,7 @@ export function PlaySession({
       set.add(k);
     }
     return set;
-  }, [cards, scanPlacements, targetKeys]);
+  }, [campaign, built.blocked, cards, scanPlacements, targetKeys]);
 
   const prevBlockedRef = useRef<Set<string>>(new Set());
   const stopRectsRef = useRef<Map<string, DOMRect>>(new Map());
@@ -412,7 +545,7 @@ export function PlaySession({
     for (const k of prev) if (!blocked.has(k)) leaving.push(k);
     for (const k of blocked) if (!prev.has(k)) entering.push(k);
 
-    if (leaving.length && !awaitingDeal) {
+    if (leaving.length && !awaitingDeal && campaign !== "training") {
       const rects = leaving
         .map((k) => stopRectsRef.current.get(k))
         .filter((r): r is DOMRect => !!r && r.width > 1 && r.height > 1);
@@ -441,7 +574,7 @@ export function PlaySession({
         for (const el of els) el.style.visibility = "";
       });
     }
-  }, [blocked, awaitingDeal]);
+  }, [blocked, awaitingDeal, campaign]);
 
   useLayoutEffect(() => {
     const cache = new Map<string, DOMRect>();
@@ -489,25 +622,40 @@ export function PlaySession({
   }, [built, level?.briefing]);
 
   useLayoutEffect(() => {
+    setHoldPlease(!(campaign === "training" && prevFeltRef.current.cards.size > 0));
+  }, [tableSig, campaign]);
+
+  useLayoutEffect(() => {
     if (campaign === "endless" && !level) return;
     if (!awaitingDeal) return;
     if (placements !== built.placements) return;
-    const boardEls = [...(wrapRef.current?.querySelectorAll("[data-fly-card][data-on-board]") ?? [])];
+    const boardEls = [...(wrapRef.current?.querySelectorAll("[data-fly-card][data-on-board]") ?? [])].filter(
+      (el) => !(el instanceof HTMLElement && el.dataset.stayFelt === "1"),
+    );
     const trayEls = [...(trayRef.current?.querySelectorAll("[data-fly-card]") ?? [])] as HTMLElement[];
     const marks = [...(wrapRef.current?.querySelectorAll("[data-teach-mark]") ?? [])];
-    const stopEls = [...(wrapRef.current?.querySelectorAll("[data-fly-stop]") ?? [])];
+    const stopEls = [...(wrapRef.current?.querySelectorAll("[data-fly-stop]") ?? [])].filter(
+      (el) => !(el instanceof HTMLElement && el.dataset.stayFelt === "1"),
+    );
     if (!boardEls.length && !trayEls.length && !marks.length && !stopEls.length) {
+      setHoldPlease(false);
       setShownSig(tableSig);
       skipTrayReorg.current = false;
       return;
     }
+    setHoldPlease(false);
     if (boardEls.length || trayEls.length) playDeal();
     if (boardEls.length || stopEls.length) playWhoosh();
+    const failsafe = window.setTimeout(() => {
+      setShownSig(tableSig);
+      skipTrayReorg.current = false;
+    }, 2200);
     void Promise.all([
       boardDealIn([...boardEls, ...stopEls]),
       dealIn(trayEls),
       teachMarkIn(marks),
     ]).then(() => {
+      window.clearTimeout(failsafe);
       const landed = [...boardEls, ...trayEls, ...marks, ...stopEls].filter(
         (el): el is HTMLElement => el instanceof HTMLElement,
       );
@@ -526,6 +674,20 @@ export function PlaySession({
     });
   }, [awaitingDeal, tableSig, placements, built.placements, campaign]);
 
+  useLayoutEffect(() => {
+    if (awaitingDeal) return;
+    if (campaign !== "training") {
+      prevFeltRef.current = { cards: new Map(), stops: new Set() };
+      return;
+    }
+    const cardsMap = new Map<string, { rank: Rank; suit: Suit }>();
+    for (const c of cards) {
+      const p = placements[c.id];
+      if (p && p !== "tray") cardsMap.set(`${p.r},${p.c}`, { rank: c.rank, suit: c.suit });
+    }
+    prevFeltRef.current = { cards: cardsMap, stops: new Set(blocked) };
+  }, [awaitingDeal, campaign, cards, placements, blocked]);
+
   const cardsById = useMemo(() => new Map(cards.map((c) => [c.id, c])), [cards]);
 
   const hands = useMemo(() => {
@@ -540,24 +702,6 @@ export function PlaySession({
   }, [grid, blocked, scanPlacements, cardsById, campaign]);
   const score = totalScore(hands);
   const teachMarks = useMemo(() => howtoMarks(level), [level]);
-  const teachByCell = useMemo(() => {
-    const m = new Map<string, TeachMark[]>();
-    for (const mark of teachMarks) {
-      const anchor = mark.hang === "start" ? mark.cells[0] : mark.cells[mark.cells.length - 1];
-      const k = cellKey(anchor.r, anchor.c);
-      const list = m.get(k) ?? [];
-      list.push(mark);
-      m.set(k, list);
-    }
-    return m;
-  }, [teachMarks]);
-  const teachOutline = useMemo(() => {
-    const m = new Map<string, boolean>();
-    for (const mark of teachMarks) {
-      for (const p of mark.cells) m.set(cellKey(p.r, p.c), mark.ok);
-    }
-    return m;
-  }, [teachMarks]);
   const highlighted = useMemo(() => {
     const s = new Set<string>();
     for (const h of hands) for (const c of h.cells) s.add(cellKey(c.r, c.c));
@@ -570,6 +714,12 @@ export function PlaySession({
     .sort(sortHighToLow);
   const trayOrderKey = trayCards.map((c) => c.id).join("|");
   const trayEmpty = cards.every((c) => c.fixed || placements[c.id] !== "tray");
+  const guideCardIds = useMemo(() => {
+    if (campaign !== "howto" && campaign !== "training") return [];
+    const ids = trayCards.filter((c) => targets[c.id]).map((c) => c.id);
+    if (drag?.id && targets[drag.id] && !ids.includes(drag.id)) ids.push(drag.id);
+    return ids;
+  }, [campaign, trayOrderKey, targets, drag?.id]);
 
   useLayoutEffect(() => {
     const els = [...(trayRef.current?.querySelectorAll("[data-fly-card]") ?? [])] as HTMLElement[];
@@ -945,33 +1095,58 @@ export function PlaySession({
   };
 
   const hitFromBox = (box: DOMRect, skipId?: string) => {
-    const min = box.width * box.height * 0.16;
-    let bestCard: { id: string; area: number } | null = null;
-    let bestCell: { r: number; c: number; area: number } | null = null;
-    let trayArea = 0;
-
-    for (const n of document.querySelectorAll<HTMLElement>("[data-card-id]")) {
-      const id = n.dataset.cardId;
-      if (!id || id === skipId) continue;
-      const area = overlapArea(box, n.getBoundingClientRect());
-      if (area < min) continue;
-      if (!bestCard || area > bestCard.area) bestCard = { id, area };
-    }
-    for (const n of document.querySelectorAll<HTMLElement>("[data-cell]")) {
+    type Hit = {
+      r: number;
+      c: number;
+      score: number;
+      overlap: number;
+      empty: boolean;
+      swapId: string | null;
+    };
+    const hits: Hit[] = [];
+    const nodes = wrapRef.current?.querySelectorAll<HTMLElement>("[data-board-cell]") ?? [];
+    for (const n of nodes) {
       if (n.dataset.r == null || n.dataset.c == null) continue;
-      const area = overlapArea(box, n.getBoundingClientRect());
-      if (area < min) continue;
-      if (!bestCell || area > bestCell.area) {
-        bestCell = { r: Number(n.dataset.r), c: Number(n.dataset.c), area };
-      }
+      const rect = n.getBoundingClientRect();
+      const tile = rect.width * rect.height;
+      if (tile < 1) continue;
+      const overlap = overlapArea(box, rect);
+      if (overlap <= 0) continue;
+      const r = Number(n.dataset.r);
+      const c = Number(n.dataset.c);
+      const occ = occupiedAt(placements, r, c, skipId);
+      const other = occ ? cardsById.get(occ) : undefined;
+      hits.push({
+        r,
+        c,
+        score: overlap / tile,
+        overlap,
+        empty: canSeat(r, c, skipId),
+        swapId: other && !other.fixed ? other.id : null,
+      });
     }
+
+    const empties = hits.filter((h) => h.empty);
+    const swaps = hits.filter((h) => h.swapId);
+    const maxOf = (arr: Hit[]) => arr.reduce((a, b) => (a.score >= b.score ? a : b));
+
+    let chosen: Hit | null = null;
+    if (empties.length === 1) chosen = empties[0];
+    else if (empties.length > 1) chosen = maxOf(empties);
+    else if (swaps.length) chosen = maxOf(swaps);
+    else if (hits.length) chosen = maxOf(hits);
+
+    let trayOverlap = 0;
     const trayEl = trayRef.current;
-    if (trayEl) trayArea = overlapArea(box, trayEl.getBoundingClientRect());
+    if (trayEl) trayOverlap = overlapArea(box, trayEl.getBoundingClientRect());
+    const uniqueEmpty = empties.length === 1;
+    const trayWins =
+      trayOverlap > 0 && !uniqueEmpty && (!chosen || trayOverlap > chosen.overlap);
 
     return {
-      cardId: bestCard?.id ?? null,
-      cell: bestCell ? { r: bestCell.r, c: bestCell.c } : null,
-      tray: trayArea >= min && (!bestCell || trayArea > bestCell.area),
+      cardId: chosen && !trayWins ? chosen.swapId : null,
+      cell: chosen && !trayWins ? { r: chosen.r, c: chosen.c } : null,
+      tray: trayWins,
     };
   };
 
@@ -1072,12 +1247,17 @@ export function PlaySession({
   };
 
   const scatterThen = async (after: () => void) => {
+    setShowWinUi(false);
+    if (campaign === "training") {
+      after();
+      return;
+    }
     const nodes = [
       ...document.querySelectorAll<HTMLElement>("[data-fly-card]"),
       ...document.querySelectorAll<HTMLElement>("[data-fly-stop]"),
+      ...document.querySelectorAll<HTMLElement>("[data-teach-mark]"),
     ];
     playWhoosh();
-    setShowWinUi(false);
     await Promise.race([
       scatterElements(nodes),
       new Promise<void>((resolve) => window.setTimeout(resolve, 1400)),
@@ -1108,8 +1288,12 @@ export function PlaySession({
   const remain = cards.filter((c) => !c.fixed).length;
   const placed = remain - trayCards.length;
 
-  if (campaign === "endless" && !level) {
-    return <div className="felt-bg h-dvh" />;
+  if (campaign === "endless" && (endlessLoading || !level)) {
+    return (
+      <div className="felt-bg relative h-dvh">
+        <WaitOverlay show status={genStatus} />
+      </div>
+    );
   }
 
   if (campaign === "custom" && !savedReady) return null;
@@ -1133,6 +1317,24 @@ export function PlaySession({
   return (
     <div className="felt-bg relative flex h-dvh flex-col overflow-hidden">
       <div className="felt-noise absolute inset-0" />
+      <WaitOverlay
+        show={
+          holdPlease &&
+          !(campaign === "training" && prevFeltRef.current.cards.size > 0)
+        }
+      />
+      <GuideArrows
+        active={
+          (campaign === "howto" || campaign === "training") &&
+          !won &&
+          !awaitingDeal &&
+          !holdPlease
+        }
+        cardIds={guideCardIds}
+        targets={targets}
+        drag={drag}
+        scale={scale}
+      />
       <header className="relative z-10 flex shrink-0 items-center justify-between gap-2 px-2 py-1">
         <Link
           to="/"
@@ -1175,14 +1377,14 @@ export function PlaySession({
             aria-label="Settings"
             onClick={() => setSettingsOpen(true)}
           >
-            <Settings2 className="size-5" />
+            <Settings className="size-5" />
           </button>
         </div>
       </header>
 
       <div ref={stageRef} className="relative z-10 mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col overflow-hidden px-2 pb-2">
-        <div className="mb-1 flex shrink-0 items-center justify-between gap-3 px-1">
-          <p className="min-w-0 flex-1 truncate text-xs leading-snug text-fg-muted sm:text-sm">
+        <div className="mb-1 flex shrink-0 items-start justify-between gap-3 px-1">
+          <p className="min-w-0 flex-1 text-xs leading-snug text-fg-muted sm:text-sm">
             {toast || level.briefing}
           </p>
           <div className="flex items-center gap-2">
@@ -1218,7 +1420,7 @@ export function PlaySession({
               style={{ borderWidth: BOARD_RAIL, padding: BOARD_PAD }}
             >
               <div
-                className="grid"
+                className="relative grid"
                 style={{
                   gridTemplateColumns: `repeat(${grid}, ${CELL_W}px)`,
                   gridTemplateRows: `repeat(${grid}, ${CELL_H}px)`,
@@ -1245,13 +1447,13 @@ export function PlaySession({
                   const isHover =
                     !!hoverCell && hoverCell.r === r && hoverCell.c === c && droppable && !card;
                   const isHi = highlighted.has(key) && occ !== drag?.id;
-                  const teachOk = teachOutline.get(key);
                   return (
                     <div
                       key={key}
+                      data-board-cell="1"
                       data-cell={droppable ? "1" : undefined}
-                      data-r={droppable ? r : undefined}
-                      data-c={droppable ? c : undefined}
+                      data-r={r}
+                      data-c={c}
                       className={cn(
                         "relative rounded-[3px]",
                         isBlocked
@@ -1276,9 +1478,10 @@ export function PlaySession({
                         <span
                           data-fly-stop="1"
                           data-stop-key={key}
+                          data-stay-felt={stopStay(key) ? "1" : undefined}
                           className={cn(
                             "pointer-events-none absolute inset-0 grid place-items-center",
-                            awaitingDeal && "invisible",
+                            awaitingDeal && !stopStay(key) && "invisible",
                           )}
                         >
                           <StopSign className="h-[70%] w-[70%] drop-shadow-[0_1px_1px_rgba(0,0,0,0.45)]" />
@@ -1290,19 +1493,17 @@ export function PlaySession({
                           data-fly-card="1"
                           data-on-board="1"
                           data-card-id={card.id}
+                          data-stay-felt={feltStay(r, c, card.rank, card.suit) ? "1" : undefined}
                           className={cn(
                             "absolute inset-[1px] touch-none rounded-[4px]",
-                            awaitingDeal && "invisible",
+                            awaitingDeal && !feltStay(r, c, card.rank, card.suit) && "invisible",
                             drag?.id === card.id && "invisible",
                             isCardSel && "ring-2 ring-gold ring-offset-1 ring-offset-felt",
                             isSwapHover && "ring-2 ring-ok ring-offset-1 ring-offset-felt",
                             !isCardSel &&
                               !isSwapHover &&
                               isHi &&
-                              teachOk === undefined &&
                               "ring-2 ring-cream/70",
-                            !isCardSel && !isSwapHover && teachOk === true && "teach-outline-ok",
-                            !isCardSel && !isSwapHover && teachOk === false && "teach-outline-bad",
                           )}
                           style={{ cursor: card.fixed ? "default" : "grab" }}
                           onPointerDown={(ev) => onPointerDown(ev, card)}
@@ -1314,42 +1515,60 @@ export function PlaySession({
                           <CardFace card={card} dimmed={card.fixed} style={cardStyle} />
                         </button>
                       ) : null}
-                      {(teachByCell.get(key) ?? []).map((mark) => {
-                        const side =
-                          mark.axis === "row"
-                            ? mark.hang === "start"
-                              ? "left-0 top-1/2 -translate-x-[60%] -translate-y-1/2"
-                              : "right-0 top-1/2 translate-x-[60%] -translate-y-1/2"
-                            : mark.hang === "start"
-                              ? "left-1/2 top-0 -translate-x-1/2 -translate-y-[60%]"
-                              : "left-1/2 bottom-0 -translate-x-1/2 translate-y-[60%]";
-                        return (
-                          <span
-                            key={`${mark.axis}-${mark.ok ? "ok" : "no"}-${mark.hang}`}
-                            data-teach-mark="1"
-                            aria-label={mark.ok ? "Correct combination" : "Incorrect combination"}
-                            className={cn(
-                              "teach-mark pointer-events-none absolute z-20",
-                              awaitingDeal && "invisible",
-                              mark.ok ? "text-[#4ad66a]" : "text-pip-red",
-                              side,
-                            )}
-                            style={{ animationDelay: mark.ok ? "0s" : "0.35s" }}
-                          >
-                            {mark.ok ? (
-                              <Check
-                                className="size-[44px] drop-shadow-[0_1px_2px_rgba(0,0,0,0.85)]"
-                                strokeWidth={3.25}
-                              />
-                            ) : (
-                              <X
-                                className="size-[44px] drop-shadow-[0_1px_2px_rgba(0,0,0,0.85)]"
-                                strokeWidth={3.25}
-                              />
-                            )}
-                          </span>
-                        );
-                      })}
+                    </div>
+                  );
+                })}
+                {teachMarks.map((mark) => {
+                  const rs = mark.cells.map((p) => p.r);
+                  const cs = mark.cells.map((p) => p.c);
+                  const r0 = Math.min(...rs);
+                  const r1 = Math.max(...rs);
+                  const c0 = Math.min(...cs);
+                  const c1 = Math.max(...cs);
+                  const pad = 3;
+                  const left = c0 * (CELL_W + CELL_GAP) - pad;
+                  const top = r0 * (CELL_H + CELL_GAP) - pad;
+                  const width = (c1 - c0 + 1) * CELL_W + (c1 - c0) * CELL_GAP + pad * 2;
+                  const height = (r1 - r0 + 1) * CELL_H + (r1 - r0) * CELL_GAP + pad * 2;
+                  const side =
+                    mark.axis === "row"
+                      ? mark.hang === "start"
+                        ? "left-0 top-1/2 -translate-x-[55%] -translate-y-1/2"
+                        : "right-0 top-1/2 translate-x-[55%] -translate-y-1/2"
+                      : mark.hang === "start"
+                        ? "left-1/2 top-0 -translate-x-1/2 -translate-y-[55%]"
+                        : "left-1/2 bottom-0 -translate-x-1/2 translate-y-[55%]";
+                  return (
+                    <div
+                      key={`teach-${mark.axis}-${mark.ok ? "ok" : "no"}-${r0}-${c0}`}
+                      data-teach-mark="1"
+                      aria-label={mark.ok ? "Correct combination" : "Incorrect combination"}
+                      className={cn(
+                        "pointer-events-none absolute z-20 rounded-[8px]",
+                        awaitingDeal && "invisible",
+                        mark.ok ? "teach-outline-ok" : "teach-outline-bad",
+                      )}
+                      style={{ left, top, width, height }}
+                    >
+                      <span
+                        className={cn(
+                          "teach-mark absolute",
+                          mark.ok ? "text-[#4ad66a]" : "text-pip-red",
+                          side,
+                        )}
+                      >
+                        {mark.ok ? (
+                          <Check
+                            className="size-[44px] drop-shadow-[0_1px_2px_rgba(0,0,0,0.85)]"
+                            strokeWidth={3.25}
+                          />
+                        ) : (
+                          <X
+                            className="size-[44px] drop-shadow-[0_1px_2px_rgba(0,0,0,0.85)]"
+                            strokeWidth={3.25}
+                          />
+                        )}
+                      </span>
                     </div>
                   );
                 })}

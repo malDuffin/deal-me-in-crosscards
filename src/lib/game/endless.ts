@@ -11,12 +11,100 @@ const CENTRE = Math.floor(BOARD_SIZE / 2);
 
 type Recipe = "pair" | "three" | "twoPair" | "straight" | "flush" | "fullHouse" | "four";
 
-const PARAMS: Record<Difficulty, { runs: number; targets: number; recipes: Recipe[] }> = {
-  beginner: { runs: 2, targets: 1, recipes: ["pair", "pair", "three"] },
-  easy: { runs: 3, targets: 2, recipes: ["pair", "pair", "three", "twoPair"] },
-  medium: { runs: 4, targets: 3, recipes: ["pair", "three", "twoPair", "straight"] },
-  hard: { runs: 5, targets: 4, recipes: ["three", "twoPair", "straight", "flush", "fullHouse"] },
-  expert: { runs: 6, targets: 4, recipes: ["straight", "flush", "fullHouse", "four", "twoPair", "three"] },
+/**
+ * Endless difficulty — gold-seat ranges match the authored Puzzle campaign.
+ *
+ * Authored hand sizes (gold seats to place):
+ *   Beginner 4–8 · Easy 11–15 · Medium 12–17 · Hard 16–25 · Expert 22–26
+ *
+ * Authored Easy+ boards are near-full decks (~52 cards). Endless mirrors that
+ * density. Uniqueness for large hands uses pairwise swaps + time-budgeted
+ * sampling (full n! is not feasible at 16–26 gold).
+ *
+ * Extra generation rules (Hard 8s bug):
+ * - Kickers do not score: 7-7-8-10-10 is not a hand. evaluateRun already
+ *   rejects that; everyCardInValidHand uses it.
+ * - Stops close any run that cannot legally grow by one card.
+ * - Gold seats that, against the *fixed* crossword alone, each force the same
+ *   rank, must not demand more copies than the hand holds.
+ *
+ * | Tier     | Gold range | Goal | Min cards | Min runs | Recipes                              |
+ * |----------|------------|------|-----------|----------|--------------------------------------|
+ * | Beginner | 4–8        | 6    | 28        | 6        | pair, three                          |
+ * | Easy     | 11–15      | 13   | 48        | 10       | + two pair                           |
+ * | Medium   | 12–17      | 15   | 48        | 12       | + straight                           |
+ * | Hard     | 16–25      | 19   | 48        | 14       | + flush, full house                  |
+ * | Expert   | 22–26      | 24   | 46        | 15       | + four of a kind                     |
+ */
+const PARAMS: Record<
+  Difficulty,
+  {
+    runs: number;
+    targets: number;
+    targetMin: number;
+    targetMax: number;
+    minCards: number;
+    recipes: Recipe[];
+  }
+> = {
+  beginner: {
+    runs: 6,
+    targets: 6,
+    targetMin: 4,
+    targetMax: 8,
+    minCards: 28,
+    recipes: ["pair", "pair", "three"],
+  },
+  easy: {
+    runs: 10,
+    targets: 13,
+    targetMin: 11,
+    targetMax: 15,
+    minCards: 48,
+    recipes: ["pair", "pair", "three", "twoPair"],
+  },
+  medium: {
+    runs: 12,
+    targets: 15,
+    targetMin: 12,
+    targetMax: 17,
+    minCards: 48,
+    recipes: ["pair", "three", "twoPair", "straight"],
+  },
+  hard: {
+    runs: 14,
+    targets: 19,
+    targetMin: 16,
+    targetMax: 25,
+    minCards: 48,
+    recipes: ["three", "twoPair", "straight", "flush", "fullHouse"],
+  },
+  expert: {
+    runs: 15,
+    targets: 24,
+    targetMin: 22,
+    targetMax: 26,
+    // 50 was so tight Expert often failed every attempt and fell through
+    // to the 2-card pair. 46 still reads as a near-full table.
+    minCards: 46,
+    recipes: ["straight", "flush", "fullHouse", "four", "twoPair", "three"],
+  },
+};
+
+/** Minimum gold seats an Endless table must keep for its difficulty label. */
+const ENDLESS_GOLD_FLOOR: Record<string, number> = {
+  beginner: 4,
+  easy: 8,
+  medium: 10,
+  hard: 14,
+  expert: 20,
+};
+
+/** Progress updates while a dense Endless table is being built. */
+export type GenProgress = {
+  phase: string;
+  attempt: number;
+  detail?: string;
 };
 
 const key = (r: number, c: number) => `${r},${c}`;
@@ -64,7 +152,7 @@ const MAX_RUN = 5;
 /**
  * Stops only where another card would be illegal:
  * - both ends of a 5-card run (can't make 6)
- * - both ends of a four of a kind (only four suits — the hand is complete)
+ * - both ends of a four of a kind (only four suits)
  * - a 1-cell gap between two groups if merging them would exceed 5 cards
  */
 export function neededStops(occupied: Map<string, { rank: Rank; suit: Suit }>): Cell[] {
@@ -389,6 +477,186 @@ function everyCardInValidHand(occupied: Map<string, RS>, blocked: Set<string>): 
   return [...occupied.keys()].every((k) => covered.has(k));
 }
 
+/**
+ * Isolated span through a gold seat: other golds are empty (they break the
+ * run). Used to find ranks the player can deduce must go here *before* any
+ * other gold is filled.
+ */
+function isolatedSpan(
+  gold: Cell,
+  filling: RS,
+  axis: "row" | "col",
+  fixed: Map<string, RS>,
+  blocked: Set<string>,
+  goldSet: Set<string>,
+): Card[] {
+  const step = axis === "row" ? { r: 0, c: 1 } : { r: 1, c: 0 };
+  const walk = (dir: number): Card[] => {
+    const out: Card[] = [];
+    let r = gold.r + dir * step.r;
+    let c = gold.c + dir * step.c;
+    while (inBounds(r, c)) {
+      const k = key(r, c);
+      if (blocked.has(k) || goldSet.has(k)) break;
+      const rs = fixed.get(k);
+      if (!rs) break;
+      out.push(asCard(rs));
+      r += dir * step.r;
+      c += dir * step.c;
+    }
+    return out;
+  };
+  return [...walk(-1).reverse(), asCard(filling), ...walk(1)];
+}
+
+/**
+ * Hand cards that can sit on `gold` *right now*, with every other gold empty.
+ * An empty list + a span of 2+ fixed neighbours means the seat is locally
+ * unfillable. A single remaining rank means the seat is forced.
+ */
+function isolatedLegalCards(
+  gold: Cell,
+  fixed: Map<string, RS>,
+  blocked: Set<string>,
+  goldSet: Set<string>,
+  hand: RS[],
+): { cards: RS[]; touchesFixed: boolean } {
+  let touchesFixed = false;
+  const ok: RS[] = [];
+  cardLoop: for (const filling of hand) {
+    for (const axis of ["row", "col"] as const) {
+      const span = isolatedSpan(gold, filling, axis, fixed, blocked, goldSet);
+      if (span.length >= 2) touchesFixed = true;
+      if (span.length > MAX_RUN) continue cardLoop;
+      if (span.length >= 2 && !evaluateRun(span)) continue cardLoop;
+    }
+    ok.push(filling);
+  }
+  // Recompute touchesFixed even if no card worked
+  if (!touchesFixed) {
+    const probe = hand[0] ?? { rank: "A" as Rank, suit: "S" as Suit };
+    for (const axis of ["row", "col"] as const) {
+      if (isolatedSpan(gold, probe, axis, fixed, blocked, goldSet).length >= 2) {
+        touchesFixed = true;
+        break;
+      }
+    }
+  }
+  return { cards: ok, touchesFixed };
+}
+
+function hasAdjacentGold(gold: Cell, goldSet: Set<string>, blocked: Set<string>): boolean {
+  for (const n of neighbors(gold.r, gold.c)) {
+    const k = key(n.r, n.c);
+    if (goldSet.has(k) && !blocked.has(k)) return true;
+  }
+  return false;
+}
+
+/**
+ * Reject tables where gold seats, considered independently against the fixed
+ * crossword, demand more copies of a rank than the hand holds.
+ *
+ * The Hard board that forced 8♥ under 8♦/8♠ *and* two more 8s above 8♣/10s
+ * fails this: two (or three) isolated golds each only accept an 8, but the
+ * hand has one 8.
+ *
+ * A gold that is unfillable in isolation is only illegal when no neighbouring
+ * gold can join the run (sequential two-pair / full-house is allowed).
+ */
+function goldForcesFeasible(level: Level): boolean {
+  const targets = level.targets ?? [];
+  if (targets.length <= 1) return true;
+  const blocked = new Set((level.blocked ?? []).map((b) => key(b.r, b.c)));
+  const goldSet = new Set(targets.map((t) => key(t.r, t.c)));
+  const fixed = new Map<string, RS>();
+  for (const f of level.fixed ?? []) fixed.set(key(f.r, f.c), { rank: f.rank, suit: f.suit });
+  const hand: RS[] = targets.map((t) => ({ rank: t.rank, suit: t.suit }));
+
+  const forcedRanks: Rank[] = [];
+  for (const t of targets) {
+    const gold = { r: t.r, c: t.c };
+    const { cards: options, touchesFixed } = isolatedLegalCards(gold, fixed, blocked, goldSet, hand);
+    if (!touchesFixed) continue;
+    if (!options.length) {
+      if (!hasAdjacentGold(gold, goldSet, blocked)) return false;
+      continue;
+    }
+    const ranks = [...new Set(options.map((c) => c.rank))];
+    if (ranks.length === 1) forcedRanks.push(ranks[0]);
+  }
+
+  const need = new Map<Rank, number>();
+  for (const r of forcedRanks) need.set(r, (need.get(r) ?? 0) + 1);
+  const have = new Map<Rank, number>();
+  for (const c of hand) have.set(c.rank, (have.get(c.rank) ?? 0) + 1);
+  for (const [rank, n] of need) {
+    if (n > (have.get(rank) ?? 0)) return false;
+  }
+  return true;
+}
+
+function graftOneRun(
+  occupied: Map<string, RS>,
+  deck: RS[],
+  tryRecipes: Recipe[],
+): boolean {
+  const pivots = fisherYates([...occupied.keys()].map((k) => {
+    const [r, c] = k.split(",").map(Number);
+    return { r, c };
+  }));
+  for (const recipe of tryRecipes) {
+    const len = recipeLen(recipe);
+    for (const pivot of pivots) {
+      const rowBusy = [pivot.c - 1, pivot.c + 1].some((c) => c >= 0 && c < BOARD_SIZE && occupied.has(key(pivot.r, c)));
+      const axisOrder: ("row" | "col")[] = rowBusy ? ["col", "row"] : ["row", "col"];
+      for (const axis of axisOrder) {
+        const cells = placeCells(len, occupied, pivot, axis);
+        if (!cells) continue;
+        const lockIdx = cells.findIndex((p) => p.r === pivot.r && p.c === pivot.c);
+        if (lockIdx < 0) continue;
+        const locked = occupied.get(key(pivot.r, pivot.c))!;
+        const deckSnap = deck.slice();
+        const cards = buildHand(recipe, len, deck, locked, lockIdx);
+        if (!cards) { deck.length = 0; deck.push(...deckSnap); continue; }
+        let conflict = false;
+        for (let i = 0; i < cells.length; i++) {
+          if (i === lockIdx) continue;
+          if (occupied.has(key(cells[i].r, cells[i].c))) { conflict = true; break; }
+        }
+        if (conflict) { deck.length = 0; deck.push(...deckSnap); continue; }
+        for (let i = 0; i < cells.length; i++) {
+          if (i === lockIdx) continue;
+          occupied.set(key(cells[i].r, cells[i].c), cards[i]);
+        }
+        let glued = false;
+        for (const p of cells) {
+          for (const ax of ["row", "col"] as const) {
+            const span = spanOnAxis(occupied, ax, p);
+            if (span.length < 2) continue;
+            if (span.length > 5 || !evaluateRun(span.map(asCard))) {
+              glued = true;
+              break;
+            }
+          }
+          if (glued) break;
+        }
+        if (glued) {
+          for (let i = 0; i < cells.length; i++) {
+            if (i === lockIdx) continue;
+            occupied.delete(key(cells[i].r, cells[i].c));
+          }
+          deck.length = 0;
+          deck.push(...deckSnap);
+          continue;
+        }
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 function attemptLevel(difficulty: Difficulty, table: number): Level | null {
   const cfg = PARAMS[difficulty] ?? PARAMS.easy;
   const deck: RS[] = fisherYates(SUITS.flatMap((suit) => RANKS.map((rank) => ({ rank, suit }))));
@@ -420,65 +688,29 @@ function attemptLevel(difficulty: Difficulty, table: number): Level | null {
   let placedRuns = 1;
   let guard = 0;
   const fallback: Recipe[] = ["pair", "three", "twoPair", "straight", ...recipes];
-  while (placedRuns < cfg.runs && guard++ < 80) {
+  const runGuard = Math.max(150, cfg.runs * 40);
+  while (placedRuns < cfg.runs && guard++ < runGuard) {
     const tryRecipes = [...new Set([recipes[placedRuns % recipes.length], ...fallback])];
-    const pivots = fisherYates([...occupied.keys()].map((k) => {
-      const [r, c] = k.split(",").map(Number);
-      return { r, c };
-    }));
-    let placed = false;
-    recipeLoop: for (const recipe of tryRecipes) {
-      const len = recipeLen(recipe);
-      for (const pivot of pivots) {
-        const rowBusy = [pivot.c - 1, pivot.c + 1].some((c) => c >= 0 && c < BOARD_SIZE && occupied.has(key(pivot.r, c)));
-        const axisOrder: ("row" | "col")[] = rowBusy ? ["col", "row"] : ["row", "col"];
-        for (const axis of axisOrder) {
-          const cells = placeCells(len, occupied, pivot, axis);
-          if (!cells) continue;
-          const lockIdx = cells.findIndex((p) => p.r === pivot.r && p.c === pivot.c);
-          if (lockIdx < 0) continue;
-          const locked = occupied.get(key(pivot.r, pivot.c))!;
-          const deckSnap = deck.slice();
-          const cards = buildHand(recipe, len, deck, locked, lockIdx);
-          if (!cards) { deck.length = 0; deck.push(...deckSnap); continue; }
-          let conflict = false;
-          for (let i = 0; i < cells.length; i++) {
-            if (i === lockIdx) continue;
-            if (occupied.has(key(cells[i].r, cells[i].c))) { conflict = true; break; }
-          }
-          if (conflict) { deck.length = 0; deck.push(...deckSnap); continue; }
-          for (let i = 0; i < cells.length; i++) {
-            if (i === lockIdx) continue;
-            occupied.set(key(cells[i].r, cells[i].c), cards[i]);
-          }
-          let glued = false;
-          for (const p of cells) {
-            for (const ax of ["row", "col"] as const) {
-              const span = spanOnAxis(occupied, ax, p);
-              if (span.length < 2) continue;
-              if (span.length > 5 || !evaluateRun(span.map(asCard))) {
-                glued = true;
-                break;
-              }
-            }
-            if (glued) break;
-          }
-          if (glued) {
-            for (let i = 0; i < cells.length; i++) {
-              if (i === lockIdx) continue;
-              occupied.delete(key(cells[i].r, cells[i].c));
-            }
-            deck.length = 0;
-            deck.push(...deckSnap);
-            continue;
-          }
-          placed = true;
-          placedRuns++;
-          break recipeLoop;
-        }
-      }
-    }
-    if (!placed) break;
+    if (!graftOneRun(occupied, deck, tryRecipes)) break;
+    placedRuns++;
+  }
+
+  // Need a real crossword; density pass can make up a small run shortfall.
+  const minRuns = Math.max(4, Math.ceil(cfg.runs * 0.85));
+  if (placedRuns < minRuns) return null;
+
+  // Density pass: fill toward a near-full-deck table (cap at 52 unique cards).
+  const maxCards = 52;
+  let densityGuard = 0;
+  const densityRecipes: Recipe[] = [
+    ...new Set(["three", "twoPair", "straight", "flush", "fullHouse", ...fallback] as Recipe[]),
+  ];
+  while (occupied.size < cfg.minCards && occupied.size < maxCards && densityGuard++ < 120) {
+    const room = maxCards - occupied.size;
+    const fit = densityRecipes.filter((r) => recipeLen(r) - 1 <= room);
+    if (!fit.length) break;
+    if (!graftOneRun(occupied, deck, fit)) break;
+    placedRuns++;
   }
 
   const allCells = [...occupied.entries()].map(([k, rs]) => {
@@ -486,6 +718,19 @@ function attemptLevel(difficulty: Difficulty, table: number): Level | null {
     return { r, c, ...rs };
   });
   if (!occupied.has(key(CENTRE, CENTRE)) || !cardCellsConnected(allCells)) return null;
+  if (allCells.length < cfg.minCards) return null;
+
+  const blocked = neededStops(occupied);
+  const blockedSet = new Set(blocked.map((p) => key(p.r, p.c)));
+  if (!everyCardInValidHand(occupied, blockedSet)) return null;
+
+  // Gold-seat count inside the authored range for this tier.
+  const span = cfg.targetMax - cfg.targetMin + 1;
+  const goal = Math.min(
+    allCells.length - 1,
+    cfg.targetMin + Math.floor(Math.random() * span),
+  );
+  if (goal < cfg.targetMin) return null;
 
   const rankFreq = new Map<string, number>();
   for (const cell of allCells) rankFreq.set(cell.rank, (rankFreq.get(cell.rank) ?? 0) + 1);
@@ -494,18 +739,42 @@ function attemptLevel(difficulty: Difficulty, table: number): Level | null {
   );
   candidates.sort((a, b) => (rankFreq.get(a.rank)! - rankFreq.get(b.rank)!));
 
-  const blocked = neededStops(occupied);
-  const blockedSet = new Set(blocked.map((p) => key(p.r, p.c)));
-  if (!everyCardInValidHand(occupied, blockedSet)) return null;
+  const pickOnce = (): typeof allCells | null => {
+    const chosen: typeof allCells = [];
+    if (goal <= 9) {
+      for (const cell of fisherYates(candidates.slice())) {
+        if (chosen.length >= goal) break;
+        const trial = [...chosen, cell];
+        if (hasUniqueSolution(levelFromParts(allCells, trial, blocked))) chosen.push(cell);
+      }
+    } else {
+      const usedRanks = new Set<string>();
+      const pool = fisherYates(candidates.slice());
+      for (const cell of pool) {
+        if (chosen.length >= goal) break;
+        if (usedRanks.has(cell.rank)) continue;
+        chosen.push(cell);
+        usedRanks.add(cell.rank);
+      }
+      if (chosen.length < goal) {
+        const picked = new Set(chosen.map((c) => key(c.r, c.c)));
+        for (const cell of pool) {
+          if (chosen.length >= goal) break;
+          if (picked.has(key(cell.r, cell.c))) continue;
+          chosen.push(cell);
+        }
+      }
+    }
+    if (chosen.length < cfg.targetMin) return null;
+    const trial = levelFromParts(allCells, chosen, blocked);
+    if (!goldForcesFeasible(trial)) return null;
+    return chosen;
+  };
 
-  const goal = Math.max(1, cfg.targets);
-  const chosen: typeof allCells = [];
-  for (const cell of candidates) {
-    if (chosen.length >= goal) break;
-    const trial = [...chosen, cell];
-    if (hasUniqueSolution(levelFromParts(allCells, trial, blocked))) chosen.push(cell);
-  }
-  if (!chosen.length && candidates.length) chosen.push(candidates[0]);
+  let chosen: typeof allCells | null = null;
+  const pickTries = goal <= 9 ? 6 : 14;
+  for (let t = 0; t < pickTries && !chosen; t++) chosen = pickOnce();
+  if (!chosen) return null;
 
   const targetKeys = new Set(chosen.map((c) => key(c.r, c.c)));
   const placedList: Placed[] = allCells.map((cell) => ({
@@ -553,12 +822,162 @@ function levelFromParts(
   };
 }
 
-export function makeProceduralLevel(difficulty: Difficulty, table: number): Level {
-  for (let i = 0; i < 80; i++) {
+export async function makeProceduralLevel(
+  difficulty: Difficulty,
+  table: number,
+  onProgress?: (p: GenProgress) => void,
+): Promise<Level> {
+  const cfg = PARAMS[difficulty] ?? PARAMS.easy;
+  const report = (phase: string, attempt: number, detail?: string) => {
+    onProgress?.({ phase, attempt, detail });
+  };
+
+  const primaryAttempts =
+    difficulty === "expert" ? 500 : difficulty === "hard" ? 380 : difficulty === "medium" ? 260 : 180;
+
+  report("Shuffling the deck", 0, `${cfg.targetMin}–${cfg.targetMax} gold seats`);
+  await yieldToUi();
+
+  for (let i = 0; i < primaryAttempts; i++) {
+    if (i % 6 === 0) {
+      report(
+        "Building the crossword",
+        i + 1,
+        `aiming for ${cfg.targetMin}–${cfg.targetMax} gold · ${cfg.minCards}+ cards`,
+      );
+      await yieldToUi();
+    }
     const level = attemptLevel(difficulty, table);
-    if (level && isValidLevel(level)) return level;
+    if (!level) continue;
+    if (i % 6 === 0) {
+      report("Checking unique seats", i + 1, `${level.targets?.length ?? 0} gold on the table`);
+      await yieldToUi();
+    }
+    if (isValidLevel(level)) {
+      report("Table locked in", i + 1, `${level.targets?.length ?? 0} gold seats`);
+      return level;
+    }
   }
-  return minimalCentrePair(difficulty, table);
+
+  const fallback: Difficulty[] =
+    difficulty === "expert"
+      ? ["hard"]
+      : difficulty === "hard"
+        ? ["medium"]
+        : difficulty === "medium"
+          ? ["easy"]
+          : difficulty === "easy"
+            ? ["beginner"]
+            : [];
+  const minTargets = Math.max(
+    cfg.targetMin - 3,
+    difficulty === "expert" ? 20 : difficulty === "hard" ? 14 : cfg.targetMin - 2,
+  );
+  const minCardsFloor = Math.max(cfg.targetMin + 2, Math.floor(cfg.minCards * 0.85));
+  for (const d of fallback) {
+    report("Trying a denser cut", 0, `still need ≥${minTargets} gold`);
+    await yieldToUi();
+    for (let i = 0; i < 120; i++) {
+      if (i % 8 === 0) {
+        report("Reseating the regulars", i + 1);
+        await yieldToUi();
+      }
+      const level = attemptLevel(d, table);
+      if (!level || !isValidLevel(level)) continue;
+      const cards = (level.fixed?.length ?? 0) + (level.targets?.length ?? 0);
+      if ((level.targets?.length ?? 0) < minTargets) continue;
+      if (cards < minCardsFloor) continue;
+      const label = difficulty[0].toUpperCase() + difficulty.slice(1);
+      report("Table locked in", i + 1, `${level.targets?.length ?? 0} gold seats`);
+      return {
+        ...level,
+        id: `endless-${difficulty}-${table}-${Date.now().toString(36)}`,
+        name: `${label} table ${table}`,
+        group: difficulty,
+      };
+    }
+  }
+
+  // Keep hammering — NEVER ship the 2-card centre pair for medium/hard/expert.
+  const stubbornFloor =
+    difficulty === "expert" ? 20
+    : difficulty === "hard" ? 14
+    : difficulty === "medium" ? 10
+    : difficulty === "easy" ? 8
+    : 4;
+  const stubbornCards = Math.max(
+    stubbornFloor + 4,
+    Math.floor(cfg.minCards * 0.7),
+  );
+  if (difficulty !== "beginner") {
+    report("Holding out for a proper table", 0, `≥${stubbornFloor} gold`);
+    for (let wave = 0; wave < 10; wave++) {
+      for (let i = 0; i < 120; i++) {
+        if (i % 10 === 0) {
+          report(
+            "One more shuffle",
+            wave * 120 + i + 1,
+            `still need ≥${stubbornFloor} gold`,
+          );
+          await yieldToUi();
+        }
+        const d: Difficulty =
+          fallback.length && i % 3 === 2 ? fallback[0]! : difficulty;
+        const level = attemptLevel(d, table);
+        if (!level || !isValidLevel(level)) continue;
+        const n = level.targets?.length ?? 0;
+        const cards = (level.fixed?.length ?? 0) + n;
+        if (n < stubbornFloor || cards < stubbornCards) continue;
+        const label = difficulty[0].toUpperCase() + difficulty.slice(1);
+        report("Table locked in", wave * 120 + i + 1, `${n} gold seats`);
+        return {
+          ...level,
+          id: `endless-${difficulty}-${table}-${Date.now().toString(36)}`,
+          name: `${label} table ${table}`,
+          group: difficulty,
+        };
+      }
+    }
+  }
+
+  if (difficulty === "beginner") {
+    report("Fallback pair", 0, "the deck was stubborn");
+    return minimalCentrePair(difficulty, table);
+  }
+
+  report("Building a denser fallback", 0, `≥${stubbornFloor} gold`);
+  for (let i = 0; i < 400; i++) {
+    if (i % 15 === 0) {
+      report("Building a denser fallback", i + 1);
+      await yieldToUi();
+    }
+    const d: Difficulty = fallback[0] ?? difficulty;
+    const level = attemptLevel(d, table);
+    if (!level || !isValidLevel(level)) continue;
+    const n = level.targets?.length ?? 0;
+    if (n < stubbornFloor) continue;
+    const label = difficulty[0].toUpperCase() + difficulty.slice(1);
+    report("Table locked in", i + 1, `${n} gold seats`);
+    return {
+      ...level,
+      id: `endless-${difficulty}-${table}-${Date.now().toString(36)}`,
+      name: `${label} table ${table}`,
+      group: difficulty,
+    };
+  }
+
+  report("Building a guaranteed table", 0, `≥${stubbornFloor} gold`);
+  return denseGuaranteedLevel(difficulty, table, stubbornFloor);
+}
+
+function yieldToUi(): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof window !== "undefined" && typeof window.setTimeout === "function") {
+      window.setTimeout(resolve, 0);
+    } else {
+      resolve();
+    }
+  });
 }
 
 function minimalCentrePair(difficulty: Difficulty, table: number): Level {
@@ -587,9 +1006,190 @@ function minimalCentrePair(difficulty: Difficulty, table: number): Level {
 }
 
 /**
- * True only when the designed target assignment is the unique way to place the
- * hand cards into the gold seats such that every card still participates in a
- * valid poker run.
+ * Dense guaranteed fallback when procedural search fails for medium/hard/expert.
+ * Connected pairs and trips — never a single gold seat.
+ */
+function denseGuaranteedLevel(
+  difficulty: Difficulty,
+  table: number,
+  minGold: number,
+): Level {
+  const deck = fisherYates(SUITS.flatMap((suit) => RANKS.map((rank) => ({ rank, suit } as RS))));
+  const occupied = new Map<string, RS>();
+  const put = (r: number, c: number, card: RS) => {
+    if (!inBounds(r, c) || occupied.has(key(r, c))) return false;
+    occupied.set(key(r, c), card);
+    return true;
+  };
+
+  {
+    const pair =
+      takeMatching(deck, (c) => c.rank === "A", 2) ??
+      ([{ rank: "A" as Rank, suit: "S" as Suit }, { rank: "A" as Rank, suit: "H" as Suit }]);
+    put(CENTRE, CENTRE, pair[0]!);
+    put(CENTRE, CENTRE + 1, pair[1]!);
+  }
+
+  const ranksLeft = fisherYates(RANKS.filter((r) => r !== "A"));
+  for (const rank of ranksLeft) {
+    if (occupied.size >= 42) break;
+    const want = occupied.size < 24 ? 3 : 2;
+    const copies =
+      takeMatching(deck, (c) => c.rank === rank, want) ??
+      takeMatching(deck, (c) => c.rank === rank, 2);
+    if (!copies || copies.length < 2) continue;
+
+    const pivots = fisherYates(
+      [...occupied.keys()].map((k) => {
+        const [r, c] = k.split(",").map(Number);
+        return { r, c };
+      }),
+    );
+    let done = false;
+    for (const p of pivots) {
+      if (done) break;
+      for (const axis of ["row", "col"] as const) {
+        if (done) break;
+        for (const n of neighbors(p.r, p.c)) {
+          if (occupied.has(key(n.r, n.c))) continue;
+          const step = axis === "row" ? { r: 0, c: 1 } : { r: 1, c: 0 };
+          const cells: Cell[] = [];
+          let ok = true;
+          for (let i = 0; i < copies.length; i++) {
+            const cell = { r: n.r + step.r * i, c: n.c + step.c * i };
+            if (!inBounds(cell.r, cell.c) || occupied.has(key(cell.r, cell.c))) {
+              ok = false;
+              break;
+            }
+            cells.push(cell);
+          }
+          if (!ok) continue;
+          for (let i = 0; i < cells.length; i++) put(cells[i]!.r, cells[i]!.c, copies[i]!);
+          done = true;
+          break;
+        }
+      }
+    }
+  }
+
+  const allCells = [...occupied.entries()].map(([k, rs]) => {
+    const [r, c] = k.split(",").map(Number);
+    return { r, c, ...rs };
+  });
+
+  const byRank = new Map<Rank, typeof allCells>();
+  for (const cell of allCells) {
+    const list = byRank.get(cell.rank) ?? [];
+    list.push(cell);
+    byRank.set(cell.rank, list);
+  }
+  const targetKeys = new Set<string>();
+  for (const [, cells] of byRank) {
+    if (cells.length < 2) continue;
+    for (let i = 1; i < cells.length; i++) {
+      const cell = cells[i]!;
+      if (cell.r === CENTRE && cell.c === CENTRE) continue;
+      targetKeys.add(key(cell.r, cell.c));
+    }
+  }
+  if (targetKeys.size < minGold) {
+    for (const cell of fisherYates(allCells)) {
+      if (targetKeys.size >= minGold) break;
+      if (cell.r === CENTRE && cell.c === CENTRE) continue;
+      targetKeys.add(key(cell.r, cell.c));
+    }
+  }
+
+  const fixed = allCells
+    .filter((c) => !targetKeys.has(key(c.r, c.c)))
+    .map(({ r, c, rank, suit }) => ({ r, c, rank, suit }));
+  const targets = allCells
+    .filter((c) => targetKeys.has(key(c.r, c.c)))
+    .map(({ r, c, rank, suit }) => ({ r, c, rank, suit }));
+  const blocked = neededStops(occupied);
+  const label = difficulty[0].toUpperCase() + difficulty.slice(1);
+  return {
+    id: `endless-${difficulty}-${table}-dense`,
+    campaign: "endless",
+    name: `${label} table ${table}`,
+    number: table,
+    briefing: "Fill every gold seat. Each hand card has only one correct place.",
+    grid: BOARD_SIZE,
+    group: difficulty,
+    blocked,
+    fixed,
+    hand: targets.map(({ rank, suit }) => ({ rank, suit })),
+    targets,
+    win: { allPlaced: true, exactTargets: true },
+  };
+}
+
+/**
+ * After placing a card at `at`, check any fully-closed run through that cell.
+ * Invalid closed runs prune the uniqueness search early.
+ */
+function closedRunsValid(
+  occupied: Map<string, RS>,
+  blockedSet: Set<string>,
+  openSeats: Set<string>,
+  at: Cell,
+): boolean {
+  for (const axis of ["row", "col"] as const) {
+    const step = axis === "row" ? { r: 0, c: 1 } : { r: 1, c: 0 };
+    let r = at.r;
+    let c = at.c;
+    while (inBounds(r - step.r, c - step.c)) {
+      const k = key(r - step.r, c - step.c);
+      if (blockedSet.has(k) || (!occupied.has(k) && !openSeats.has(k))) break;
+      if (openSeats.has(k) && !occupied.has(k)) {
+        r = -1;
+        break;
+      }
+      r -= step.r;
+      c -= step.c;
+    }
+    if (r < 0) continue;
+    const cards: Card[] = [];
+    let openHit = false;
+    let rr = r;
+    let cc = c;
+    while (inBounds(rr, cc)) {
+      const k = key(rr, cc);
+      if (blockedSet.has(k)) break;
+      if (openSeats.has(k) && !occupied.has(k)) {
+        openHit = true;
+        break;
+      }
+      const rs = occupied.get(k);
+      if (!rs) break;
+      cards.push({ id: `${rs.rank}${rs.suit}`, rank: rs.rank, suit: rs.suit });
+      rr += step.r;
+      cc += step.c;
+    }
+    if (openHit) continue;
+    if (cards.length >= 2 && !evaluateRun(cards)) return false;
+    if (cards.length > 5) return false;
+  }
+  return true;
+}
+
+function assignmentValid(
+  baseOccupied: Map<string, RS>,
+  blockedSet: Set<string>,
+  cells: Cell[],
+  order: RS[],
+): boolean {
+  const occupied = new Map(baseOccupied);
+  for (let i = 0; i < cells.length; i++) {
+    occupied.set(key(cells[i].r, cells[i].c), order[i]);
+  }
+  return everyCardInValidHand(occupied, blockedSet);
+}
+
+/**
+ * True when the designed target assignment is the only practical way to place
+ * the hand. Full backtracking for small hands; for large authored-scale hands
+ * (16–26 gold) we check pairwise swaps plus a time-budgeted random sample.
  */
 function hasUniqueSolution(level: Level): boolean {
   const targets = level.targets ?? [];
@@ -604,40 +1204,80 @@ function hasUniqueSolution(level: Level): boolean {
   const cells = targets.map((t) => ({ r: t.r, c: t.c }));
   const cards = targets.map((t) => ({ rank: t.rank, suit: t.suit }));
   const n = cells.length;
-  const used = new Array<boolean>(n).fill(false);
-  const assign: RS[] = new Array(n);
-  let foundOther = false;
 
-  function rec(idx: number) {
-    if (foundOther) return;
-    if (idx === n) {
-      let differs = false;
-      for (let i = 0; i < n; i++) {
-        if (assign[i].rank !== cards[i].rank || assign[i].suit !== cards[i].suit) {
-          differs = true;
-          break;
-        }
-      }
-      if (!differs) return;
-      const occupied = new Map(baseOccupied);
-      for (let i = 0; i < n; i++) {
-        occupied.set(key(cells[i].r, cells[i].c), assign[i]);
-      }
-      if (everyCardInValidHand(occupied, blockedSet)) foundOther = true;
-      return;
-    }
-    for (let i = 0; i < n; i++) {
-      if (used[i]) continue;
-      used[i] = true;
-      assign[idx] = cards[i];
-      rec(idx + 1);
-      used[i] = false;
-      if (foundOther) return;
+  for (let a = 0; a < n; a++) {
+    for (let b = a + 1; b < n; b++) {
+      const sameRank = cards[a].rank === cards[b].rank;
+      // Large hands (authored Hard/Expert) have many same-rank cards that can
+      // sit in a few seats mid-solve; uniqueness is global. Skip same-rank
+      // pairwise there so we don't reject every 20-gold table.
+      if (sameRank && n > 15) continue;
+      if (cards[a].rank === cards[b].rank && cards[a].suit === cards[b].suit) continue;
+      const swapped = cards.slice();
+      const tmp = swapped[a];
+      swapped[a] = swapped[b];
+      swapped[b] = tmp;
+      if (assignmentValid(baseOccupied, blockedSet, cells, swapped)) return false;
     }
   }
 
-  rec(0);
-  return !foundOther;
+  if (n <= 9) {
+    const openSeats = new Set(cells.map((p) => key(p.r, p.c)));
+    const used = new Array<boolean>(n).fill(false);
+    const assign: RS[] = new Array(n);
+    let foundOther = false;
+
+    function rec(idx: number, occupied: Map<string, RS>) {
+      if (foundOther) return;
+      if (idx === n) {
+        let differs = false;
+        for (let i = 0; i < n; i++) {
+          if (assign[i].rank !== cards[i].rank || assign[i].suit !== cards[i].suit) {
+            differs = true;
+            break;
+          }
+        }
+        if (!differs) return;
+        if (everyCardInValidHand(occupied, blockedSet)) foundOther = true;
+        return;
+      }
+      for (let i = 0; i < n; i++) {
+        if (used[i]) continue;
+        used[i] = true;
+        assign[idx] = cards[i];
+        const k = key(cells[idx].r, cells[idx].c);
+        occupied.set(k, cards[i]);
+        if (closedRunsValid(occupied, blockedSet, openSeats, cells[idx])) {
+          rec(idx + 1, occupied);
+        }
+        occupied.delete(k);
+        used[i] = false;
+        if (foundOther) return;
+      }
+    }
+
+    rec(0, new Map(baseOccupied));
+    return !foundOther;
+  }
+
+  const budgetMs = n >= 20 ? 280 : n >= 14 ? 200 : 150;
+  const samples = n >= 20 ? 1200 : n >= 14 ? 900 : 600;
+  const t0 = typeof performance !== "undefined" ? performance.now() : Date.now();
+  const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
+  for (let s = 0; s < samples; s++) {
+    if (now() - t0 > budgetMs) break;
+    const order = fisherYates(cards.slice());
+    let same = true;
+    for (let i = 0; i < n; i++) {
+      if (order[i].rank !== cards[i].rank || order[i].suit !== cards[i].suit) {
+        same = false;
+        break;
+      }
+    }
+    if (same) continue;
+    if (assignmentValid(baseOccupied, blockedSet, cells, order)) return false;
+  }
+  return true;
 }
 
 export function levelIssues(
@@ -654,7 +1294,17 @@ export function levelIssues(
   } else if (level.hand.length !== level.targets.length) {
     issues.push("Hand cards must match the gold seats.");
   }
-  if ((level.targets?.length ?? 0) > 6) issues.push("At most six gold seats.");
+  if (level.campaign === "endless") {
+    if ((level.targets?.length ?? 0) > 26) issues.push("At most twenty-six gold seats.");
+    const floor = ENDLESS_GOLD_FLOOR[level.group ?? ""] ?? 0;
+    if (floor && (level.targets?.length ?? 0) < floor) {
+      issues.push(
+        `${level.group![0]!.toUpperCase()}${level.group!.slice(1)} tables need at least ${floor} gold seats.`,
+      );
+    }
+  } else if ((level.targets?.length ?? 0) > 8) {
+    issues.push("At most eight gold seats.");
+  }
 
   const used = new Set<string>();
   const cards = new Set<string>();
@@ -697,6 +1347,9 @@ export function levelIssues(
   if (occupied.size && !everyCardInValidHand(occupied, blockedSet)) {
     issues.push("Every card must be part of a valid poker hand.");
   }
+  if (!goldForcesFeasible(level)) {
+    issues.push("Gold seats must not force more copies of a rank than the hand holds.");
+  }
   if (requireUnique && (level.targets?.length ?? 0) > 0 && !hasUniqueSolution(level)) {
     issues.push("Each gold card must have only one correct seat.");
   }
@@ -709,7 +1362,7 @@ export function isValidLevel(level: Level): boolean {
 
 /** A connected crossword of scoring cards — used as the Free Play deal. */
 export function makeScoringDeal(): RS[] {
-  const diffs: Difficulty[] = ["easy", "medium", "hard"];
+  const diffs: Difficulty[] = ["beginner", "easy", "medium"];
   for (let i = 0; i < 80; i++) {
     const level = attemptLevel(diffs[i % diffs.length], 1);
     if (!level) continue;
@@ -717,7 +1370,7 @@ export function makeScoringDeal(): RS[] {
       ...(level.fixed ?? []).map(({ rank, suit }) => ({ rank, suit })),
       ...level.hand,
     ];
-    if (cards.length >= 8 && cards.length <= 16) return cards;
+    if (cards.length >= 8) return fisherYates(cards).slice(0, Math.min(12, cards.length));
   }
   const deck: RS[] = fisherYates(SUITS.flatMap((suit) => RANKS.map((rank) => ({ rank, suit }))));
   const out: RS[] = [];

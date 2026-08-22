@@ -32,6 +32,8 @@ export function scatterElements(els: HTMLElement[]): Promise<void> {
       clone.style.zIndex = "90";
       clone.style.pointerEvents = "none";
       clone.style.margin = "0";
+      clone.style.transform = "none";
+      clone.style.translate = "none";
       clone.style.transformOrigin = "center center";
       document.body.appendChild(clone);
       el.style.visibility = "hidden";
