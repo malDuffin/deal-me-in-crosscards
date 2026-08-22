@@ -118,6 +118,62 @@ describe("endless gold floors", () => {
   });
 });
 
+describe("unique solution", () => {
+  it("rejects two interchangeable 5s in separate pair seats", () => {
+    // Two fixed 5s each paired with a gold 5 — either hand 5 can sit in either seat.
+    const level = L({
+      group: "beginner",
+      fixed: [
+        { r: 5, c: 5, rank: "5", suit: "C" },
+        { r: 0, c: 0, rank: "5", suit: "H" },
+        { r: 8, c: 0, rank: "2", suit: "C" },
+        { r: 8, c: 2, rank: "3", suit: "C" },
+      ],
+      targets: [
+        { r: 5, c: 6, rank: "5", suit: "D" },
+        { r: 0, c: 1, rank: "5", suit: "S" },
+        { r: 9, c: 0, rank: "2", suit: "D" },
+        { r: 9, c: 2, rank: "3", suit: "D" },
+      ],
+      hand: [
+        { rank: "5", suit: "D" },
+        { rank: "5", suit: "S" },
+        { rank: "2", suit: "D" },
+        { rank: "3", suit: "D" },
+      ],
+    });
+    const issues = levelIssues(level, { requireUnique: true, requireCentre: false });
+    assert.ok(
+      issues.some((s) => /one correct seat/i.test(s)),
+      `expected unique-seat issue, got: ${issues.join(" | ")}`,
+    );
+  });
+
+  it("rejects four freely ordered Aces", () => {
+    const level = L({
+      group: "beginner",
+      fixed: [],
+      targets: [
+        { r: 5, c: 4, rank: "A", suit: "S" },
+        { r: 5, c: 5, rank: "A", suit: "H" },
+        { r: 5, c: 6, rank: "A", suit: "D" },
+        { r: 5, c: 7, rank: "A", suit: "C" },
+      ],
+      hand: [
+        { rank: "A", suit: "S" },
+        { rank: "A", suit: "H" },
+        { rank: "A", suit: "D" },
+        { rank: "A", suit: "C" },
+      ],
+    });
+    const issues = levelIssues(level, { requireUnique: true, requireCentre: false });
+    assert.ok(
+      issues.some((s) => /one correct seat/i.test(s)),
+      `expected unique-seat issue, got: ${issues.join(" | ")}`,
+    );
+  });
+});
+
 describe("neededStops closes dead-end pairs", () => {
   it("puts stops at both ends of four of a kind", () => {
     const occupied = new Map([

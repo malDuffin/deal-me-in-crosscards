@@ -750,6 +750,8 @@ function attemptLevel(difficulty: Difficulty, table: number): Level | null {
     } else {
       const usedRanks = new Set<string>();
       const pool = fisherYates(candidates.slice());
+      // Prefer one seat per rank first — same-rank doubles are the usual
+      // source of interchangeable seats (two 5s, four Aces, …).
       for (const cell of pool) {
         if (chosen.length >= goal) break;
         if (usedRanks.has(cell.rank)) continue;
@@ -761,13 +763,20 @@ function attemptLevel(difficulty: Difficulty, table: number): Level | null {
         for (const cell of pool) {
           if (chosen.length >= goal) break;
           if (picked.has(key(cell.r, cell.c))) continue;
+          const trial = [...chosen, cell];
+          const trialLevel = levelFromParts(allCells, trial, blocked);
+          // Reject seats that introduce interchangeable same-rank copies.
+          if (!hasUniqueSolution(trialLevel)) continue;
+          if (!goldForcesFeasible(trialLevel)) continue;
           chosen.push(cell);
+          picked.add(key(cell.r, cell.c));
         }
       }
     }
     if (chosen.length < cfg.targetMin) return null;
     const trial = levelFromParts(allCells, chosen, blocked);
     if (!goldForcesFeasible(trial)) return null;
+    if (!hasUniqueSolution(trial)) return null;
     return chosen;
   };
 
@@ -1083,20 +1092,51 @@ function denseGuaranteedLevel(
     list.push(cell);
     byRank.set(cell.rank, list);
   }
+  // At most one gold per rank so two 5s / four Aces cannot swap seats.
+  // Remaining copies of the rank stay fixed and force the single gold seat.
   const targetKeys = new Set<string>();
-  for (const [, cells] of byRank) {
+  const goldedRanks = new Set<Rank>();
+  for (const [rank, cells] of byRank) {
     if (cells.length < 2) continue;
-    for (let i = 1; i < cells.length; i++) {
+    for (let i = 0; i < cells.length; i++) {
       const cell = cells[i]!;
       if (cell.r === CENTRE && cell.c === CENTRE) continue;
       targetKeys.add(key(cell.r, cell.c));
+      goldedRanks.add(rank);
+      break;
     }
   }
   if (targetKeys.size < minGold) {
     for (const cell of fisherYates(allCells)) {
       if (targetKeys.size >= minGold) break;
       if (cell.r === CENTRE && cell.c === CENTRE) continue;
+      if (targetKeys.has(key(cell.r, cell.c))) continue;
+      // Prefer ranks that are not already golded; only double up if needed.
+      if (goldedRanks.has(cell.rank) && targetKeys.size < minGold - 2) continue;
+      const trialKeys = new Set(targetKeys);
+      trialKeys.add(key(cell.r, cell.c));
+      const trialTargets = allCells
+        .filter((c) => trialKeys.has(key(c.r, c.c)))
+        .map(({ r, c, rank, suit }) => ({ r, c, rank, suit }));
+      const trialFixed = allCells
+        .filter((c) => !trialKeys.has(key(c.r, c.c)))
+        .map(({ r, c, rank, suit }) => ({ r, c, rank, suit }));
+      const trialLevel: Level = {
+        id: "trial",
+        campaign: "endless",
+        name: "",
+        number: 0,
+        briefing: "",
+        grid: BOARD_SIZE,
+        blocked: neededStops(occupied),
+        fixed: trialFixed,
+        targets: trialTargets,
+        hand: trialTargets.map(({ rank, suit }) => ({ rank, suit })),
+        win: { allPlaced: true, exactTargets: true },
+      };
+      if (!hasUniqueSolution(trialLevel)) continue;
       targetKeys.add(key(cell.r, cell.c));
+      goldedRanks.add(cell.rank);
     }
   }
 
@@ -1205,19 +1245,50 @@ function hasUniqueSolution(level: Level): boolean {
   const cards = targets.map((t) => ({ rank: t.rank, suit: t.suit }));
   const n = cells.length;
 
+  // Every pair of seats — including same-rank different-suit — must not be
+  // interchangeable. Skipping same-rank on large hands let Expert tables ship
+  // with two 5s or four Aces freely swappable.
   for (let a = 0; a < n; a++) {
     for (let b = a + 1; b < n; b++) {
-      const sameRank = cards[a].rank === cards[b].rank;
-      // Large hands (authored Hard/Expert) have many same-rank cards that can
-      // sit in a few seats mid-solve; uniqueness is global. Skip same-rank
-      // pairwise there so we don't reject every 20-gold table.
-      if (sameRank && n > 15) continue;
       if (cards[a].rank === cards[b].rank && cards[a].suit === cards[b].suit) continue;
       const swapped = cards.slice();
       const tmp = swapped[a];
       swapped[a] = swapped[b];
       swapped[b] = tmp;
       if (assignmentValid(baseOccupied, blockedSet, cells, swapped)) return false;
+    }
+  }
+
+  // Same-rank groups of 3+: also try non-swap permutations (cycles). Pairwise
+  // catches free swaps; cycles catch "rotate three Aces" style ambiguities.
+  const rankGroups = new Map<Rank, number[]>();
+  for (let i = 0; i < n; i++) {
+    const list = rankGroups.get(cards[i].rank) ?? [];
+    list.push(i);
+    rankGroups.set(cards[i].rank, list);
+  }
+  for (const idxs of rankGroups.values()) {
+    if (idxs.length < 3) continue;
+    const k = idxs.length;
+    // Rotate left by 1, 2, ... k-1
+    for (let rot = 1; rot < k; rot++) {
+      const order = cards.slice();
+      for (let j = 0; j < k; j++) {
+        order[idxs[j]!] = cards[idxs[(j + rot) % k]!]!;
+      }
+      if (assignmentValid(baseOccupied, blockedSet, cells, order)) return false;
+    }
+    // A couple of random shuffles within the group
+    for (let s = 0; s < Math.min(8, k * 2); s++) {
+      const perm = fisherYates(idxs.map((i) => cards[i]!));
+      let differs = false;
+      const order = cards.slice();
+      for (let j = 0; j < k; j++) {
+        order[idxs[j]!] = perm[j]!;
+        if (perm[j]!.suit !== cards[idxs[j]!]!.suit) differs = true;
+      }
+      if (!differs) continue;
+      if (assignmentValid(baseOccupied, blockedSet, cells, order)) return false;
     }
   }
 
@@ -1260,8 +1331,9 @@ function hasUniqueSolution(level: Level): boolean {
     return !foundOther;
   }
 
-  const budgetMs = n >= 20 ? 280 : n >= 14 ? 200 : 150;
-  const samples = n >= 20 ? 1200 : n >= 14 ? 900 : 600;
+  // Residual different-rank rearrangements: sample more on Expert-scale hands.
+  const budgetMs = n >= 20 ? 600 : n >= 14 ? 350 : 200;
+  const samples = n >= 20 ? 2500 : n >= 14 ? 1500 : 800;
   const t0 = typeof performance !== "undefined" ? performance.now() : Date.now();
   const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
   for (let s = 0; s < samples; s++) {
