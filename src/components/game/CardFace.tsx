@@ -16,13 +16,14 @@ export function CardFace({
   style?: CardStyle;
 }) {
   const suitClass = `suit-${card.suit.toLowerCase()}`;
+  const playable = tray || !card.fixed;
 
   if (style === "large") {
     return (
       <div
         className={cn(
           "relative flex h-full w-full flex-col overflow-hidden rounded-[4px] card-shadow",
-          "bg-cream",
+          playable ? "bg-gold" : "bg-cream",
           dimmed && "opacity-80",
           className,
         )}
@@ -38,7 +39,7 @@ export function CardFace({
             `suit-bar-${card.suit.toLowerCase()}`,
           )}
         >
-          <SuitIcon suit={card.suit} inverse className="size-[78%]" />
+          <SuitIcon suit={card.suit} inverse className="size-[88%]" />
         </div>
         {card.fixed ? <span className="absolute inset-x-0 bottom-0 h-0.5 bg-ink/20" /> : null}
       </div>
@@ -50,7 +51,7 @@ export function CardFace({
       <div
         className={cn(
           "relative flex h-full w-full flex-col justify-between rounded-[4px] border border-ink/15 px-[8%] py-[6%] card-shadow",
-          tray ? "bg-card-ivory" : "bg-cream",
+          playable ? "bg-gold" : "bg-cream",
           dimmed && "opacity-80",
           suitClass,
           className,
@@ -76,7 +77,7 @@ export function CardFace({
     <div
       className={cn(
         "relative flex h-full w-full flex-col justify-between rounded-[4px] px-[7%] py-[6%] card-shadow",
-        tray ? "bg-card-gold" : "bg-cream",
+        playable ? "bg-gold" : "bg-cream",
         dimmed && "opacity-80",
         suitClass,
         className,

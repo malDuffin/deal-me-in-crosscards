@@ -19,6 +19,7 @@ function parseSearch(raw: Record<string, unknown>): PlaySearch {
 }
 
 export const Route = createFileRoute("/play")({
+  ssr: false,
   validateSearch: parseSearch,
   component: PlayPage,
 });

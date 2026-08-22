@@ -40,6 +40,7 @@ export function SettingsSheet({ open, onClose }: { open: boolean; onClose: () =>
     if (!panel || !sheet) return;
     if (open) {
       panel.style.display = "flex";
+      panel.style.pointerEvents = "auto";
       if (prefersReducedMotion()) {
         panel.style.opacity = "1";
         sheet.style.transform = "translateY(0)";
@@ -47,33 +48,38 @@ export function SettingsSheet({ open, onClose }: { open: boolean; onClose: () =>
       }
       gsap.fromTo(panel, { opacity: 0 }, { opacity: 1, duration: 0.2 });
       gsap.fromTo(sheet, { y: 72 }, { y: 0, duration: 0.34, ease: "power3.out" });
-    } else if (panel.style.display === "flex") {
-      if (prefersReducedMotion()) {
-        panel.style.display = "none";
-        return;
-      }
-      gsap.to(sheet, { y: 72, duration: 0.22, ease: "power2.in" });
-      gsap.to(panel, {
-        opacity: 0,
-        duration: 0.22,
-        onComplete: () => {
+    } else {
+      panel.style.pointerEvents = "none";
+      if (panel.style.display === "flex") {
+        if (prefersReducedMotion()) {
           panel.style.display = "none";
-        },
-      });
+          return;
+        }
+        gsap.to(sheet, { y: 72, duration: 0.22, ease: "power2.in" });
+        gsap.to(panel, {
+          opacity: 0,
+          duration: 0.22,
+          onComplete: () => {
+            panel.style.display = "none";
+          },
+        });
+      } else {
+        panel.style.display = "none";
+      }
     }
   }, [open]);
 
   return (
     <div
       ref={panelRef}
-      className="fixed inset-0 z-50 hidden items-end justify-center bg-bg/70 sm:items-center"
+      className="glass-scrim pointer-events-none fixed inset-0 z-50 hidden items-end justify-center sm:items-center"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
       <div
         ref={sheetRef}
-        className="max-h-[min(92dvh,680px)] w-full max-w-md overflow-y-auto rounded-t-[28px] border border-border bg-surface p-5 pb-10 sm:rounded-[28px]"
+        className="glass max-h-[min(92dvh,680px)] w-full max-w-md overflow-y-auto rounded-t-[28px] p-5 pb-10 sm:rounded-[28px]"
       >
         <h2 className="mb-4 text-center font-display text-xl font-semibold tracking-tight">
           Settings
@@ -92,8 +98,8 @@ export function SettingsSheet({ open, onClose }: { open: boolean; onClose: () =>
               className={cn(
                 "flex items-center gap-3 rounded-2xl border px-3 py-2.5 text-left transition-transform duration-150 ease-out active:scale-[0.96]",
                 cardStyle === s.id
-                  ? "border-gold bg-gold/10"
-                  : "border-border bg-bg/40 hover:bg-surface-2",
+                  ? "border-gold bg-gold/15"
+                  : "glass-chip hover:bg-cream/10",
               )}
             >
               <span className="h-12 w-[34px] shrink-0" style={{ fontSize: 11 }}>
@@ -121,7 +127,7 @@ export function SettingsSheet({ open, onClose }: { open: boolean; onClose: () =>
         <div className="space-y-2">
           <Toggle
             title="Music"
-            blurb="Soft felt-table loop"
+            blurb="Late-night lounge over the felt"
             on={music && !muted}
             onClick={() => {
               unlockAudio();
@@ -163,7 +169,7 @@ function Toggle({
     <button
       type="button"
       onClick={onClick}
-      className="flex w-full items-center justify-between gap-3 rounded-2xl border border-border bg-bg/40 px-3 py-3 text-left transition-transform duration-150 ease-out active:scale-[0.96]"
+      className="glass-chip flex w-full items-center justify-between gap-3 rounded-2xl px-3 py-3 text-left transition-transform duration-150 ease-out active:scale-[0.96]"
     >
       <span>
         <span className="block font-medium">{title}</span>

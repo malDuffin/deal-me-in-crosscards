@@ -63,6 +63,8 @@ export type WinCondition = {
   pairCountsAsTwoPair?: boolean;
   /** Win only when each hand card sits on its original solution cell. */
   exactTargets?: boolean;
+  /** Every placed card must belong to a scoring poker run. */
+  allScore?: boolean;
 };
 
 export type Level = {

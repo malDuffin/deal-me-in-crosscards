@@ -1,75 +1,141 @@
 import { fisherYates } from "./deck";
 import { evaluateRun } from "./poker";
-import { makeCard } from "./deck";
 import {
-  BOARD_SIZE,
-  RANKS,
-  SUITS,
-  type Cell,
-  type Difficulty,
-  type Level,
-  type Rank,
-  type Suit,
+  BOARD_SIZE, RANKS, SUITS,
+  type Card, type Cell, type Difficulty, type Level, type Rank, type Suit,
 } from "./types";
 
 type RS = { rank: Rank; suit: Suit };
 type Placed = { r: number; c: number; rank: Rank; suit: Suit; target: boolean };
-
 const CENTRE = Math.floor(BOARD_SIZE / 2);
-
-const PARAMS: Record<
-  Difficulty,
-  { runs: number; handBias: number; blockers: number; recipes: Recipe[] }
-> = {
-  beginner: {
-    runs: 2,
-    handBias: 0.35,
-    blockers: 4,
-    recipes: ["pair", "pair", "three"],
-  },
-  easy: {
-    runs: 2,
-    handBias: 0.55,
-    blockers: 6,
-    recipes: ["pair", "pair", "three"],
-  },
-  medium: {
-    runs: 3,
-    handBias: 0.5,
-    blockers: 12,
-    recipes: ["pair", "three", "twoPair", "straight"],
-  },
-  hard: {
-    runs: 4,
-    handBias: 0.48,
-    blockers: 20,
-    recipes: ["three", "twoPair", "straight", "flush", "fullHouse"],
-  },
-  expert: {
-    runs: 5,
-    handBias: 0.45,
-    blockers: 28,
-    recipes: ["straight", "flush", "fullHouse", "four", "twoPair", "three"],
-  },
-};
 
 type Recipe = "pair" | "three" | "twoPair" | "straight" | "flush" | "fullHouse" | "four";
 
-function key(r: number, c: number) {
-  return `${r},${c}`;
+const PARAMS: Record<Difficulty, { runs: number; targets: number; recipes: Recipe[] }> = {
+  beginner: { runs: 2, targets: 1, recipes: ["pair", "pair", "three"] },
+  easy: { runs: 3, targets: 2, recipes: ["pair", "pair", "three", "twoPair"] },
+  medium: { runs: 4, targets: 3, recipes: ["pair", "three", "twoPair", "straight"] },
+  hard: { runs: 5, targets: 4, recipes: ["three", "twoPair", "straight", "flush", "fullHouse"] },
+  expert: { runs: 6, targets: 4, recipes: ["straight", "flush", "fullHouse", "four", "twoPair", "three"] },
+};
+
+const key = (r: number, c: number) => `${r},${c}`;
+const inBounds = (r: number, c: number) => r >= 0 && r < BOARD_SIZE && c >= 0 && c < BOARD_SIZE;
+const neighbors = (r: number, c: number): Cell[] =>
+  [{ r: r - 1, c }, { r: r + 1, c }, { r, c: c - 1 }, { r, c: c + 1 }].filter((p) => inBounds(p.r, p.c));
+function asCard(rs: RS): Card {
+  return { id: `${rs.rank}${rs.suit}`, rank: rs.rank, suit: rs.suit };
 }
 
-function inBounds(r: number, c: number) {
-  return r >= 0 && r < BOARD_SIZE && c >= 0 && c < BOARD_SIZE;
+/** True when the cells immediately before/after a run are empty (runs must not glue together). */
+function endsClear(cells: Cell[], occupied: Map<string, RS>, axis: "row" | "col"): boolean {
+  if (!cells.length) return false;
+  const first = cells[0];
+  const last = cells[cells.length - 1];
+  const before = axis === "row" ? { r: first.r, c: first.c - 1 } : { r: first.r - 1, c: first.c };
+  const after = axis === "row" ? { r: last.r, c: last.c + 1 } : { r: last.r + 1, c: last.c };
+  const free = (p: Cell) => !inBounds(p.r, p.c) || !occupied.has(key(p.r, p.c));
+  return free(before) && free(after);
 }
 
-function neighbors(r: number, c: number): Cell[] {
-  return [
-    { r: r - 1, c },
-    { r: r + 1, c },
-    { r, c: c - 1 },
-    { r, c: c + 1 },
-  ].filter((p) => inBounds(p.r, p.c));
+function spanOnAxis(
+  occupied: Map<string, RS>,
+  axis: "row" | "col",
+  start: Cell,
+): RS[] {
+  const step = axis === "row" ? { r: 0, c: 1 } : { r: 1, c: 0 };
+  let r = start.r;
+  let c = start.c;
+  while (inBounds(r - step.r, c - step.c) && occupied.has(key(r - step.r, c - step.c))) {
+    r -= step.r;
+    c -= step.c;
+  }
+  const out: RS[] = [];
+  while (inBounds(r, c) && occupied.has(key(r, c))) {
+    out.push(occupied.get(key(r, c))!);
+    r += step.r;
+    c += step.c;
+  }
+  return out;
+}
+
+const MAX_RUN = 5;
+
+/**
+ * Stops only where another card would be illegal:
+ * - both ends of a 5-card run (can't make 6)
+ * - both ends of a four of a kind (only four suits — the hand is complete)
+ * - a 1-cell gap between two groups if merging them would exceed 5 cards
+ */
+export function neededStops(occupied: Map<string, { rank: Rank; suit: Suit }>): Cell[] {
+  const stops = new Set<string>();
+  const consider = (r: number, c: number) => {
+    if (!inBounds(r, c)) return;
+    const k = key(r, c);
+    if (occupied.has(k)) return;
+    stops.add(k);
+  };
+
+  for (const axis of ["row", "col"] as const) {
+    for (let i = 0; i < BOARD_SIZE; i++) {
+      const segs: { a: number; b: number; ranks: Rank[] }[] = [];
+      let a = -1;
+      let ranks: Rank[] = [];
+      for (let j = 0; j <= BOARD_SIZE; j++) {
+        const r = axis === "row" ? i : j;
+        const c = axis === "row" ? j : i;
+        const card = j < BOARD_SIZE ? occupied.get(key(r, c)) : undefined;
+        if (card) {
+          if (a < 0) a = j;
+          ranks.push(card.rank);
+        } else if (a >= 0) {
+          segs.push({ a, b: j - 1, ranks });
+          a = -1;
+          ranks = [];
+        }
+      }
+      for (const s of segs) {
+        const len = s.b - s.a + 1;
+        const fourOfAKind = len === 4 && s.ranks.every((r) => r === s.ranks[0]);
+        if (len >= MAX_RUN || fourOfAKind) {
+          const before = s.a - 1;
+          const after = s.b + 1;
+          consider(axis === "row" ? i : before, axis === "row" ? before : i);
+          consider(axis === "row" ? i : after, axis === "row" ? after : i);
+        }
+      }
+      for (let s = 0; s < segs.length - 1; s++) {
+        const left = segs[s];
+        const right = segs[s + 1];
+        if (right.a - left.b !== 2) continue;
+        const merged = left.b - left.a + 1 + 1 + (right.b - right.a + 1);
+        if (merged > MAX_RUN) {
+          const j = left.b + 1;
+          consider(axis === "row" ? i : j, axis === "row" ? j : i);
+        }
+      }
+    }
+  }
+
+  return [...stops].map((k) => {
+    const [r, c] = k.split(",").map(Number);
+    return { r, c };
+  });
+}
+
+function recipeLen(recipe: Recipe): number {
+  if (recipe === "pair") return 2;
+  if (recipe === "three") return 3;
+  if (recipe === "four" || recipe === "twoPair") return 4;
+  return 5;
+}
+
+function groupedAroundLock(locked: RS, lockIdx: number, lockBlock: RS[], other: RS[]): RS[] | null {
+  const i = lockBlock.findIndex((c) => c.rank === locked.rank && c.suit === locked.suit);
+  if (i < 0) return null;
+  if (lockIdx === i) return [...lockBlock, ...other];
+  if (lockIdx === other.length + i) return [...other, ...lockBlock];
+  return null;
 }
 
 function takeMatching(deck: RS[], pred: (c: RS) => boolean, n: number): RS[] | null {
@@ -85,18 +151,13 @@ function takeMatching(deck: RS[], pred: (c: RS) => boolean, n: number): RS[] | n
   return found;
 }
 
-/**
- * Build cards for a hand recipe, optionally locking some pivot cards
- * that must be included in the result.
- */
-function buildHand(recipe: Recipe, deck: RS[], pivot?: RS[]): RS[] | null {
-  if (recipe === "pair") {
-    // If we have a pivot card, find a matching rank for the second card
-    if (pivot?.length === 1) {
-      const p = pivot[0];
-      const second = takeMatching(deck, (c) => c.rank === p.rank && c.suit !== p.suit, 1);
-      if (second) return [p, ...second];
-      return null;
+function buildHand(recipe: Recipe, len: number, deck: RS[], locked: RS | null, lockIdx: number): RS[] | null {
+  if (locked && (lockIdx < 0 || lockIdx >= len)) return null;
+  if (recipe === "pair" && len === 2) {
+    if (locked) {
+      const other = takeMatching(deck, (c) => c.rank === locked.rank && c.suit !== locked.suit, 1);
+      if (!other) return null;
+      return lockIdx === 0 ? [locked, other[0]] : [other[0], locked];
     }
     for (const rank of fisherYates([...RANKS])) {
       const cards = takeMatching(deck, (c) => c.rank === rank, 2);
@@ -104,12 +165,13 @@ function buildHand(recipe: Recipe, deck: RS[], pivot?: RS[]): RS[] | null {
     }
     return null;
   }
-  if (recipe === "three") {
-    if (pivot?.length === 1) {
-      const p = pivot[0];
-      const rest = takeMatching(deck, (c) => c.rank === p.rank && c.suit !== p.suit, 2);
-      if (rest) return [p, ...rest];
-      return null;
+  if (recipe === "three" && len === 3) {
+    if (locked) {
+      const rest = takeMatching(deck, (c) => c.rank === locked.rank && c.suit !== locked.suit, 2);
+      if (!rest) return null;
+      const out = [...rest];
+      out.splice(lockIdx, 0, locked);
+      return out;
     }
     for (const rank of fisherYates([...RANKS])) {
       const cards = takeMatching(deck, (c) => c.rank === rank, 3);
@@ -117,12 +179,13 @@ function buildHand(recipe: Recipe, deck: RS[], pivot?: RS[]): RS[] | null {
     }
     return null;
   }
-  if (recipe === "four") {
-    if (pivot?.length === 1) {
-      const p = pivot[0];
-      const rest = takeMatching(deck, (c) => c.rank === p.rank && c.suit !== p.suit, 3);
-      if (rest) return [p, ...rest];
-      return null;
+  if (recipe === "four" && len === 4) {
+    if (locked) {
+      const rest = takeMatching(deck, (c) => c.rank === locked.rank && c.suit !== locked.suit, 3);
+      if (!rest) return null;
+      const out = [...rest];
+      out.splice(lockIdx, 0, locked);
+      return out;
     }
     for (const rank of fisherYates([...RANKS])) {
       const cards = takeMatching(deck, (c) => c.rank === rank, 4);
@@ -130,29 +193,69 @@ function buildHand(recipe: Recipe, deck: RS[], pivot?: RS[]): RS[] | null {
     }
     return null;
   }
-  if (recipe === "twoPair") {
-    const a = buildHand("pair", deck, pivot?.slice(0, 1));
-    const b = buildHand("pair", deck);
-    if (a && b) return [...a, ...b];
-    if (a) deck.unshift(...a);
-    if (b) deck.unshift(...b);
-    return null;
-  }
-  if (recipe === "fullHouse") {
-    const t = buildHand("three", deck, pivot?.slice(0, 1));
-    const p = buildHand("pair", deck);
-    if (t && p) return [...t, ...p];
-    if (t) deck.unshift(...t);
-    if (p) deck.unshift(...p);
-    return null;
-  }
-  if (recipe === "flush") {
-    const len = Math.random() < 0.5 ? 4 : 5;
-    if (pivot?.length === 1) {
-      const p = pivot[0];
-      const rest = takeMatching(deck, (c) => c.suit === p.suit, len - 1);
-      if (rest) return [p, ...rest];
+  if (recipe === "twoPair" && len === 4) {
+    if (locked) {
+      const mate = takeMatching(deck, (c) => c.rank === locked.rank && c.suit !== locked.suit, 1);
+      if (!mate) return null;
+      for (const rank of fisherYates(RANKS.filter((r) => r !== locked.rank))) {
+        const pair = takeMatching(deck, (c) => c.rank === rank, 2);
+        if (!pair) continue;
+        const laid = groupedAroundLock(locked, lockIdx, [locked, mate[0]], pair);
+        if (laid) return laid;
+        deck.unshift(...pair);
+      }
+      deck.unshift(...mate);
       return null;
+    }
+    for (const r1 of fisherYates([...RANKS])) {
+      const p1 = takeMatching(deck, (c) => c.rank === r1, 2);
+      if (!p1) continue;
+      for (const r2 of fisherYates(RANKS.filter((r) => r !== r1))) {
+        const p2 = takeMatching(deck, (c) => c.rank === r2, 2);
+        if (p2) return [...p1, ...p2];
+      }
+      deck.unshift(...p1);
+    }
+    return null;
+  }
+  if (recipe === "fullHouse" && len === 5) {
+    if (locked) {
+      const twoMore = takeMatching(deck, (c) => c.rank === locked.rank && c.suit !== locked.suit, 2);
+      if (twoMore) {
+        for (const rank of fisherYates(RANKS.filter((r) => r !== locked.rank))) {
+          const pair = takeMatching(deck, (c) => c.rank === rank, 2);
+          if (pair) {
+            const laid = groupedAroundLock(locked, lockIdx, [locked, ...twoMore], pair);
+            if (laid) return laid;
+            deck.unshift(...pair);
+          }
+        }
+        deck.unshift(...twoMore);
+      }
+      return null;
+    }
+    for (const r3 of fisherYates([...RANKS])) {
+      const trips = takeMatching(deck, (c) => c.rank === r3, 3);
+      if (!trips) continue;
+      for (const r2 of fisherYates(RANKS.filter((r) => r !== r3))) {
+        const pair = takeMatching(deck, (c) => c.rank === r2, 2);
+        if (pair) return [...trips, ...pair];
+      }
+      deck.unshift(...trips);
+    }
+    return null;
+  }
+  if (recipe === "flush" && len === 5) {
+    if (locked) {
+      const rest = takeMatching(
+        deck,
+        (c) => c.suit === locked.suit && !(c.rank === locked.rank && c.suit === locked.suit),
+        len - 1,
+      );
+      if (!rest) return null;
+      const out = [...rest];
+      out.splice(lockIdx, 0, locked);
+      return out;
     }
     for (const suit of fisherYates([...SUITS])) {
       const cards = takeMatching(deck, (c) => c.suit === suit, len);
@@ -160,24 +263,28 @@ function buildHand(recipe: Recipe, deck: RS[], pivot?: RS[]): RS[] | null {
     }
     return null;
   }
-  if (recipe === "straight") {
-    const len = Math.random() < 0.45 ? 4 : 5;
-    const order = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"] as Rank[];
-    const startMax = order.length - len;
-    const starts = fisherYates(Array.from({ length: startMax + 1 }, (_, i) => i));
-
-    if (pivot?.length === 1) {
-      const p = pivot[0];
-      const pivotIdx = order.indexOf(p.rank);
+  if (recipe === "straight" && len === 5) {
+    const orders: Rank[][] = [
+      ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"],
+      ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"],
+    ];
+    for (const seq of orders) {
+      const starts = fisherYates(Array.from({ length: seq.length - len + 1 }, (_, i) => i));
       for (const s of starts) {
-        if (pivotIdx < s || pivotIdx >= s + len) continue;
-        const ranks = order.slice(s, s + len);
-        const pivotRanks = ranks.filter((r) => r !== p.rank);
-        const picked: RS[] = [p];
+        const ranks = seq.slice(s, s + len);
+        if (locked && ranks[lockIdx] !== locked.rank) continue;
+        const picked: RS[] = [];
         const usedIdx: number[] = [];
         let ok = true;
-        for (const rank of pivotRanks) {
-          const idx = deck.findIndex((c, i) => c.rank === rank && !usedIdx.includes(i));
+        for (let i = 0; i < ranks.length; i++) {
+          if (locked && i === lockIdx) {
+            picked.push(locked);
+            continue;
+          }
+          const idx = deck.findIndex(
+            (c, di) => c.rank === ranks[i] && !usedIdx.includes(di) &&
+              !(locked && c.rank === locked.rank && c.suit === locked.suit),
+          );
           if (idx < 0) { ok = false; break; }
           usedIdx.push(idx);
           picked.push(deck[idx]);
@@ -188,213 +295,226 @@ function buildHand(recipe: Recipe, deck: RS[], pivot?: RS[]): RS[] | null {
         deck.push(...keep);
         return picked;
       }
-      return null;
-    }
-
-    for (const s of starts) {
-      const ranks = order.slice(s, s + len);
-      const picked: RS[] = [];
-      const usedIdx: number[] = [];
-      let ok = true;
-      for (const rank of ranks) {
-        const idx = deck.findIndex((c, i) => c.rank === rank && !usedIdx.includes(i));
-        if (idx < 0) { ok = false; break; }
-        usedIdx.push(idx);
-        picked.push(deck[idx]);
-      }
-      if (!ok) continue;
-      const keep = deck.filter((_, i) => !usedIdx.includes(i));
-      deck.length = 0;
-      deck.push(...keep);
-      return picked;
     }
     return null;
   }
   return null;
 }
 
-/**
- * Check that every card cell in the placed array participates in at least
- * one valid poker hand (consecutive run).
- */
-function everyCardInValidHand(placed: Placed[]): boolean {
-  const cellCard = new Map<string, RS>();
-  for (const p of placed) {
-    cellCard.set(key(p.r, p.c), { rank: p.rank, suit: p.suit });
-  }
-
-  const cardInHand = new Set<string>();
-
-  // Check rows
-  for (let r = 0; r < BOARD_SIZE; r++) {
-    let run: { k: string; card: RS }[] = [];
-    for (let c = 0; c < BOARD_SIZE; c++) {
-      const k = key(r, c);
-      const card = cellCard.get(k);
-      if (card) {
-        run.push({ k, card });
+function placeCells(len: number, occupied: Map<string, RS>, pivot: Cell | null, axis: "row" | "col"): Cell[] | null {
+  for (let a = 0; a < 80; a++) {
+    const horiz = axis === "row";
+    if (pivot) {
+      if (horiz) {
+        const r = pivot.r;
+        const minC = Math.max(0, pivot.c - (len - 1));
+        const maxC = Math.min(pivot.c, BOARD_SIZE - len);
+        if (minC > maxC) continue;
+        const c0 = minC + Math.floor(Math.random() * (maxC - minC + 1));
+        const cells = Array.from({ length: len }, (_, i) => ({ r, c: c0 + i }));
+        if (
+          cells.every((p) => (p.r === pivot.r && p.c === pivot.c) || !occupied.has(key(p.r, p.c))) &&
+          endsClear(cells, occupied, "row")
+        )
+          return cells;
       } else {
-        if (run.length >= 2) {
-          const cards = run.map((x, i) => makeCard(x.card.rank, x.card.suit, i));
-          if (evaluateRun(cards)) run.forEach((x) => cardInHand.add(x.k));
-        }
-        run = [];
+        const c = pivot.c;
+        const minR = Math.max(0, pivot.r - (len - 1));
+        const maxR = Math.min(pivot.r, BOARD_SIZE - len);
+        if (minR > maxR) continue;
+        const r0 = minR + Math.floor(Math.random() * (maxR - minR + 1));
+        const cells = Array.from({ length: len }, (_, i) => ({ r: r0 + i, c }));
+        if (
+          cells.every((p) => (p.r === pivot.r && p.c === pivot.c) || !occupied.has(key(p.r, p.c))) &&
+          endsClear(cells, occupied, "col")
+        )
+          return cells;
       }
+    } else if (horiz) {
+      const r = CENTRE;
+      const c0 = Math.floor(Math.random() * (BOARD_SIZE - len + 1));
+      const cells = Array.from({ length: len }, (_, i) => ({ r, c: c0 + i }));
+      if (cells.some((p) => p.c === CENTRE) && cells.every((p) => !occupied.has(key(p.r, p.c)))) return cells;
+    } else {
+      const c = CENTRE;
+      const r0 = Math.floor(Math.random() * (BOARD_SIZE - len + 1));
+      const cells = Array.from({ length: len }, (_, i) => ({ r: r0 + i, c }));
+      if (cells.some((p) => p.r === CENTRE) && cells.every((p) => !occupied.has(key(p.r, p.c)))) return cells;
     }
-    if (run.length >= 2) {
-      const cards = run.map((x, i) => makeCard(x.card.rank, x.card.suit, i));
-      if (evaluateRun(cards)) run.forEach((x) => cardInHand.add(x.k));
-    }
-  }
-
-  // Check cols
-  for (let c = 0; c < BOARD_SIZE; c++) {
-    let run: { k: string; card: RS }[] = [];
-    for (let r = 0; r < BOARD_SIZE; r++) {
-      const k = key(r, c);
-      const card = cellCard.get(k);
-      if (card) {
-        run.push({ k, card });
-      } else {
-        if (run.length >= 2) {
-          const cards = run.map((x, i) => makeCard(x.card.rank, x.card.suit, i));
-          if (evaluateRun(cards)) run.forEach((x) => cardInHand.add(x.k));
-        }
-        run = [];
-      }
-    }
-    if (run.length >= 2) {
-      const cards = run.map((x, i) => makeCard(x.card.rank, x.card.suit, i));
-      if (evaluateRun(cards)) run.forEach((x) => cardInHand.add(x.k));
-    }
-  }
-
-  return placed.every((p) => cardInHand.has(key(p.r, p.c)));
-}
-
-/** Check all card cells form one connected component including centre cell. */
-function isConnected(placed: Placed[]): boolean {
-  if (!placed.length) return false;
-  const cellSet = new Set(placed.map((p) => key(p.r, p.c)));
-  if (!cellSet.has(key(CENTRE, CENTRE))) return false;
-
-  const visited = new Set<string>();
-  const queue: string[] = [key(CENTRE, CENTRE)];
-  while (queue.length) {
-    const k = queue.pop()!;
-    if (visited.has(k)) continue;
-    visited.add(k);
-    const [r, c] = k.split(",").map(Number);
-    for (const nb of neighbors(r, c)) {
-      const nk = key(nb.r, nb.c);
-      if (cellSet.has(nk) && !visited.has(nk)) queue.push(nk);
-    }
-  }
-  return visited.size === cellSet.size;
-}
-
-/**
- * Reject levels where any non-identity permutation of hand (target) cards
- * onto gold seats still has every card in a valid run.
- * Returns true if the solution is unique.
- */
-function hasUniqueSolution(placed: Placed[]): boolean {
-  const targets = placed.filter((p) => p.target);
-  if (targets.length <= 1) return true;
-
-  // Group targets by rank — only same-rank cards are interchangeable
-  const byRank = new Map<Rank, Placed[]>();
-  for (const t of targets) {
-    const arr = byRank.get(t.rank) ?? [];
-    arr.push(t);
-    byRank.set(t.rank, arr);
-  }
-
-  // If all target ranks are distinct, solution is already unique
-  const hasDupe = [...byRank.values()].some((arr) => arr.length > 1);
-  if (!hasDupe) return true;
-
-  // Try swapping same-rank targets; if swapped placement still has all cards in valid hand → not unique
-  for (const [, group] of byRank) {
-    if (group.length < 2) continue;
-    // Try swapping pair within group
-    const swapped = placed.map((p) => ({ ...p }));
-    // find indices in placed
-    const gi = group.map((g) => placed.indexOf(g));
-    // swap positions of first two
-    const a = gi[0], b = gi[1];
-    const tmp = { r: swapped[a].r, c: swapped[a].c };
-    swapped[a].r = swapped[b].r; swapped[a].c = swapped[b].c;
-    swapped[b].r = tmp.r; swapped[b].c = tmp.c;
-
-    if (everyCardInValidHand(swapped)) return false;
-  }
-  return true;
-}
-
-/**
- * Place a run of cards as a branch from a pivot cell.
- * Direction: perpendicular to the spine axis.
- * pivot: the connecting cell (already in occupied); branch grows away from it.
- */
-function placeBranch(
-  cards: RS[],
-  pivotR: number,
-  pivotC: number,
-  horiz: boolean, // if spine is horiz, branch is vertical and vice versa
-  occupied: Set<string>,
-): Placed[] | null {
-  const len = cards.length;
-  // Try both directions from pivot
-  for (const dir of fisherYates([-1, 1])) {
-    const cells: Cell[] = [];
-    let ok = true;
-    for (let i = 0; i < len; i++) {
-      const r = horiz ? pivotR + dir * (i + 1) : pivotR;
-      const c = horiz ? pivotC : pivotC + dir * (i + 1);
-      if (!inBounds(r, c) || occupied.has(key(r, c))) { ok = false; break; }
-      cells.push({ r, c });
-    }
-    if (ok) return cells.map((cell, i) => ({ ...cell, ...cards[i], target: false }));
   }
   return null;
 }
 
-/**
- * Place a run of cards along the spine (row or column through CENTRE).
- */
-function placeSpineRun(
-  cards: RS[],
-  spineHoriz: boolean,
-  spineOffset: number,
-  occupied: Set<string>,
-): Placed[] | null {
-  const len = cards.length;
-  const maxStart = BOARD_SIZE - len;
-  const starts = fisherYates(Array.from({ length: maxStart + 1 }, (_, i) => i));
-  for (const s of starts) {
-    const cells: Cell[] = Array.from({ length: len }, (_, i) => ({
-      r: spineHoriz ? spineOffset : s + i,
-      c: spineHoriz ? s + i : spineOffset,
-    }));
-    if (cells.some((p) => occupied.has(key(p.r, p.c)))) continue;
-    if (!cells.some((p) => p.r === CENTRE && p.c === CENTRE) &&
-        !cells.some((p) => (spineHoriz ? p.c : p.r) === CENTRE)) {
-      // Must pass through or near centre
-      if (!cells.some((p) => p.r === CENTRE || p.c === CENTRE)) continue;
+function cardCellsConnected(cells: Cell[]): boolean {
+  if (!cells.length) return false;
+  const set = new Set(cells.map((p) => key(p.r, p.c)));
+  const start = cells[0];
+  const seen = new Set<string>([key(start.r, start.c)]);
+  const stack = [start];
+  while (stack.length) {
+    const p = stack.pop()!;
+    for (const n of neighbors(p.r, p.c)) {
+      const k = key(n.r, n.c);
+      if (set.has(k) && !seen.has(k)) { seen.add(k); stack.push(n); }
     }
-    return cells.map((cell, i) => ({ ...cell, ...cards[i], target: false }));
   }
-  return null;
+  return seen.size === set.size;
 }
 
-function minimalCentrePair(difficulty: Difficulty, table: number): Level {
-  // Minimal fallback: two cards placed horizontally through centre, one is target
+function everyCardInValidHand(occupied: Map<string, RS>, blocked: Set<string>): boolean {
+  const covered = new Set<string>();
+  const cellCard = (r: number, c: number): Card | null => {
+    const rs = occupied.get(key(r, c));
+    return rs ? { id: `${rs.rank}${rs.suit}`, rank: rs.rank, suit: rs.suit } : null;
+  };
+  for (const axis of ["row", "col"] as const) {
+    for (let i = 0; i < BOARD_SIZE; i++) {
+      let cards: Card[] = [];
+      let cells: Cell[] = [];
+      const flush = () => {
+        if (cards.length >= 2 && evaluateRun(cards)) for (const p of cells) covered.add(key(p.r, p.c));
+        cards = []; cells = [];
+      };
+      for (let j = 0; j < BOARD_SIZE; j++) {
+        const r = axis === "row" ? i : j;
+        const c = axis === "row" ? j : i;
+        if (blocked.has(key(r, c))) { flush(); continue; }
+        const card = cellCard(r, c);
+        if (card) { cards.push(card); cells.push({ r, c }); }
+        else flush();
+      }
+      flush();
+    }
+  }
+  return [...occupied.keys()].every((k) => covered.has(k));
+}
+
+function attemptLevel(difficulty: Difficulty, table: number): Level | null {
+  const cfg = PARAMS[difficulty] ?? PARAMS.easy;
   const deck: RS[] = fisherYates(SUITS.flatMap((suit) => RANKS.map((rank) => ({ rank, suit }))));
-  const rank = RANKS[Math.floor(Math.random() * RANKS.length)];
-  const cards = deck.filter((c) => c.rank === rank).slice(0, 2);
-  const fixed = [{ r: CENTRE, c: CENTRE - 1, rank: cards[0].rank, suit: cards[0].suit }];
-  const targets = [{ r: CENTRE, c: CENTRE, rank: cards[1].rank, suit: cards[1].suit }];
+  const occupied = new Map<string, RS>();
+  const recipes = fisherYates(cfg.recipes.slice());
+  const spineRecipe = recipes[0] ?? "pair";
+  const spineLen = recipeLen(spineRecipe);
+  const spineAxis: "row" | "col" = Math.random() < 0.5 ? "row" : "col";
+  let spineCells = placeCells(spineLen, occupied, null, spineAxis);
+  if (!spineCells || !spineCells.some((p) => p.r === CENTRE && p.c === CENTRE)) {
+    if (spineAxis === "row") {
+      const minC = Math.max(0, CENTRE - (spineLen - 1));
+      const maxC = Math.min(CENTRE, BOARD_SIZE - spineLen);
+      if (minC > maxC) return null;
+      const c0 = minC + Math.floor(Math.random() * (maxC - minC + 1));
+      spineCells = Array.from({ length: spineLen }, (_, i) => ({ r: CENTRE, c: c0 + i }));
+    } else {
+      const minR = Math.max(0, CENTRE - (spineLen - 1));
+      const maxR = Math.min(CENTRE, BOARD_SIZE - spineLen);
+      if (minR > maxR) return null;
+      const r0 = minR + Math.floor(Math.random() * (maxR - minR + 1));
+      spineCells = Array.from({ length: spineLen }, (_, i) => ({ r: r0 + i, c: CENTRE }));
+    }
+  }
+  const spineCards = buildHand(spineRecipe, spineLen, deck, null, 0);
+  if (!spineCards) return null;
+  spineCells.forEach((p, i) => occupied.set(key(p.r, p.c), spineCards[i]));
+
+  let placedRuns = 1;
+  let guard = 0;
+  const fallback: Recipe[] = ["pair", "three", "twoPair", "straight", ...recipes];
+  while (placedRuns < cfg.runs && guard++ < 80) {
+    const tryRecipes = [...new Set([recipes[placedRuns % recipes.length], ...fallback])];
+    const pivots = fisherYates([...occupied.keys()].map((k) => {
+      const [r, c] = k.split(",").map(Number);
+      return { r, c };
+    }));
+    let placed = false;
+    recipeLoop: for (const recipe of tryRecipes) {
+      const len = recipeLen(recipe);
+      for (const pivot of pivots) {
+        const rowBusy = [pivot.c - 1, pivot.c + 1].some((c) => c >= 0 && c < BOARD_SIZE && occupied.has(key(pivot.r, c)));
+        const axisOrder: ("row" | "col")[] = rowBusy ? ["col", "row"] : ["row", "col"];
+        for (const axis of axisOrder) {
+          const cells = placeCells(len, occupied, pivot, axis);
+          if (!cells) continue;
+          const lockIdx = cells.findIndex((p) => p.r === pivot.r && p.c === pivot.c);
+          if (lockIdx < 0) continue;
+          const locked = occupied.get(key(pivot.r, pivot.c))!;
+          const deckSnap = deck.slice();
+          const cards = buildHand(recipe, len, deck, locked, lockIdx);
+          if (!cards) { deck.length = 0; deck.push(...deckSnap); continue; }
+          let conflict = false;
+          for (let i = 0; i < cells.length; i++) {
+            if (i === lockIdx) continue;
+            if (occupied.has(key(cells[i].r, cells[i].c))) { conflict = true; break; }
+          }
+          if (conflict) { deck.length = 0; deck.push(...deckSnap); continue; }
+          for (let i = 0; i < cells.length; i++) {
+            if (i === lockIdx) continue;
+            occupied.set(key(cells[i].r, cells[i].c), cards[i]);
+          }
+          let glued = false;
+          for (const p of cells) {
+            for (const ax of ["row", "col"] as const) {
+              const span = spanOnAxis(occupied, ax, p);
+              if (span.length < 2) continue;
+              if (span.length > 5 || !evaluateRun(span.map(asCard))) {
+                glued = true;
+                break;
+              }
+            }
+            if (glued) break;
+          }
+          if (glued) {
+            for (let i = 0; i < cells.length; i++) {
+              if (i === lockIdx) continue;
+              occupied.delete(key(cells[i].r, cells[i].c));
+            }
+            deck.length = 0;
+            deck.push(...deckSnap);
+            continue;
+          }
+          placed = true;
+          placedRuns++;
+          break recipeLoop;
+        }
+      }
+    }
+    if (!placed) break;
+  }
+
+  const allCells = [...occupied.entries()].map(([k, rs]) => {
+    const [r, c] = k.split(",").map(Number);
+    return { r, c, ...rs };
+  });
+  if (!occupied.has(key(CENTRE, CENTRE)) || !cardCellsConnected(allCells)) return null;
+
+  const rankFreq = new Map<string, number>();
+  for (const cell of allCells) rankFreq.set(cell.rank, (rankFreq.get(cell.rank) ?? 0) + 1);
+  const candidates = fisherYates(
+    allCells.filter((c) => !(c.r === CENTRE && c.c === CENTRE)),
+  );
+  candidates.sort((a, b) => (rankFreq.get(a.rank)! - rankFreq.get(b.rank)!));
+
+  const blocked = neededStops(occupied);
+  const blockedSet = new Set(blocked.map((p) => key(p.r, p.c)));
+  if (!everyCardInValidHand(occupied, blockedSet)) return null;
+
+  const goal = Math.max(1, cfg.targets);
+  const chosen: typeof allCells = [];
+  for (const cell of candidates) {
+    if (chosen.length >= goal) break;
+    const trial = [...chosen, cell];
+    if (hasUniqueSolution(levelFromParts(allCells, trial, blocked))) chosen.push(cell);
+  }
+  if (!chosen.length && candidates.length) chosen.push(candidates[0]);
+
+  const targetKeys = new Set(chosen.map((c) => key(c.r, c.c)));
+  const placedList: Placed[] = allCells.map((cell) => ({
+    ...cell,
+    target: targetKeys.has(key(cell.r, cell.c)),
+  }));
+
+  const fixed = placedList.filter((p) => !p.target).map(({ r, c, rank, suit }) => ({ r, c, rank, suit }));
+  const targets = placedList.filter((p) => p.target).map(({ r, c, rank, suit }) => ({ r, c, rank, suit }));
   const hand = targets.map(({ rank, suit }) => ({ rank, suit }));
   const label = difficulty[0].toUpperCase() + difficulty.slice(1);
   return {
@@ -402,230 +522,212 @@ function minimalCentrePair(difficulty: Difficulty, table: number): Level {
     campaign: "endless",
     name: `${label} table ${table}`,
     number: table,
-    briefing: "Fill every gold seat. The cards only score in their marked places.",
+    briefing: "Fill every gold seat. Each hand card has only one correct place.",
     grid: BOARD_SIZE,
     group: difficulty,
-    blocked: [],
-    fixed,
-    hand,
-    targets,
+    blocked, fixed, hand, targets,
     win: { allPlaced: true, exactTargets: true },
   };
 }
 
-function attemptLevel(difficulty: Difficulty, table: number): Level | null {
-  const cfg = PARAMS[difficulty];
-  const deck: RS[] = fisherYates(
-    SUITS.flatMap((suit) => RANKS.map((rank) => ({ rank, suit }))),
-  );
-
-  const occupied = new Set<string>();
-  const placed: Placed[] = [];
-  const recipes = fisherYates(cfg.recipes.slice());
-
-  // Spine: always goes through centre row or column
-  const spineHoriz = Math.random() < 0.5;
-  const spineOffset = CENTRE; // row CENTRE (horiz) or col CENTRE (vert)
-
-  // First run: along the spine, must include centre cell
-  const firstRecipe = recipes[0];
-  const firstCards = buildHand(firstRecipe, deck);
-  if (!firstCards) return null;
-
-  // Force a spine run that passes through centre
-  let spineRun: Placed[] | null = null;
-  const len = firstCards.length;
-  // Try positions that include the centre cell on the spine
-  for (const dir of [-1, 0, 1, -2, 2]) {
-    const start = CENTRE - Math.floor(len / 2) + dir;
-    if (start < 0 || start + len > BOARD_SIZE) continue;
-    const cells: Cell[] = Array.from({ length: len }, (_, i) => ({
-      r: spineHoriz ? spineOffset : start + i,
-      c: spineHoriz ? start + i : spineOffset,
-    }));
-    if (cells.some((p) => occupied.has(key(p.r, p.c)))) continue;
-    spineRun = cells.map((cell, i) => ({ ...cell, ...firstCards[i], target: false }));
-    break;
-  }
-  if (!spineRun) {
-    // put cards back
-    deck.unshift(...firstCards);
-    // fallback: just pick any spine run
-    spineRun = placeSpineRun(firstCards, spineHoriz, spineOffset, occupied);
-    if (!spineRun) return null;
-  }
-
-  for (const p of spineRun) occupied.add(key(p.r, p.c));
-  placed.push(...spineRun);
-
-  // Find pivot on spine closest to centre (for branches)
-  const pivots = spineRun.map((p) => ({ ...p }));
-
-  // Remaining runs: perpendicular branches from pivots
-  for (let i = 1; i < cfg.runs; i++) {
-    const recipe = recipes[i % recipes.length];
-    // Pick a pivot cell from existing placed cards
-    const pivot = fisherYates(pivots)[0];
-    if (!pivot) break;
-
-    const cards = buildHand(recipe, deck, [{ rank: pivot.rank, suit: pivot.suit }]);
-    if (!cards) continue;
-
-    // Try placing branch perpendicular to spine
-    const branchHoriz = !spineHoriz;
-    let branch: Placed[] | null = null;
-
-    // The pivot is the first card; place remaining cards as the branch
-    const branchCards = cards.filter((_, idx) => idx !== 0 || cards[0].rank !== pivot.rank || cards[0].suit !== pivot.suit);
-    // Actually: pivot is already placed, we need only remaining cards from the hand
-    // Use pivot as connection point; place the rest
-    const remaining = cards.slice(1);
-
-    for (const dir of fisherYates([-1, 1])) {
-      const cells: Cell[] = [];
-      let ok = true;
-      for (let j = 0; j < remaining.length; j++) {
-        const r = branchHoriz ? pivot.r : pivot.r + dir * (j + 1);
-        const c = branchHoriz ? pivot.c + dir * (j + 1) : pivot.c;
-        if (!inBounds(r, c) || occupied.has(key(r, c))) { ok = false; break; }
-        cells.push({ r, c });
-      }
-      if (ok) {
-        // The pivot cell is already placed; we add only the branch cells
-        // but we need to include pivot as part of the run visually
-        branch = cells.map((cell, idx) => ({ ...cell, ...remaining[idx], target: false }));
-        break;
-      }
-    }
-
-    if (!branch) {
-      deck.unshift(...cards.slice(1)); // return non-pivot cards
-      continue;
-    }
-    for (const p of branch) occupied.add(key(p.r, p.c));
-    placed.push(...branch);
-  }
-
-  // Assign targets: prefer distinct ranks, modest count (max ~3)
-  const handBias = cfg.handBias;
-  // Prefer singleton ranks (ranks appearing only once among placed)
-  const rankCount = new Map<Rank, number>();
-  for (const p of placed) rankCount.set(p.rank, (rankCount.get(p.rank) ?? 0) + 1);
-  const singletons = placed.filter((p) => rankCount.get(p.rank) === 1);
-  const nonSingletons = placed.filter((p) => (rankCount.get(p.rank) ?? 0) > 1);
-
-  // Choose targets from singletons first
-  const targetPool = [...fisherYates(singletons), ...fisherYates(nonSingletons)];
-  let targetCount = 0;
-  const maxTargets = Math.min(3, Math.max(1, Math.ceil(placed.length * handBias)));
-
-  for (const p of targetPool) {
-    if (targetCount >= maxTargets) break;
-    p.target = true;
-    targetCount++;
-  }
-
-  if (targetCount === 0) {
-    // Fallback: make the last placed card a target
-    placed[placed.length - 1].target = true;
-  }
-
-  // Blockers
-  const blocked: Cell[] = [];
-  let b = 0;
-  let guard = 0;
-  while (b < cfg.blockers && guard++ < 400) {
-    const r = Math.floor(Math.random() * BOARD_SIZE);
-    const c = Math.floor(Math.random() * BOARD_SIZE);
-    if (occupied.has(key(r, c))) continue;
-    const near = neighbors(r, c).some((p) => occupied.has(key(p.r, p.c)));
-    if (!near && Math.random() < 0.65) continue;
-    occupied.add(key(r, c));
-    blocked.push({ r, c });
-    b++;
-  }
-
-  // Validate
-  if (!everyCardInValidHand(placed)) return null;
-  if (!isConnected(placed)) return null;
-  if (!hasUniqueSolution(placed)) return null;
-
-  const fixed = placed.filter((p) => !p.target).map(({ r, c, rank, suit }) => ({ r, c, rank, suit }));
-  const targets = placed.filter((p) => p.target).map(({ r, c, rank, suit }) => ({ r, c, rank, suit }));
-  const hand = targets.map(({ rank, suit }) => ({ rank, suit }));
-
-  if (!hand.length) return null;
-  if (!occupied.has(key(CENTRE, CENTRE))) return null;
-
-  const label = difficulty[0].toUpperCase() + difficulty.slice(1);
+function levelFromParts(
+  allCells: { r: number; c: number; rank: Rank; suit: Suit }[],
+  targets: { r: number; c: number; rank: Rank; suit: Suit }[],
+  blocked: Cell[],
+): Level {
+  const tset = new Set(targets.map((t) => key(t.r, t.c)));
   return {
-    id: `endless-${difficulty}-${table}-${Date.now().toString(36)}`,
+    id: "trial",
     campaign: "endless",
-    name: `${label} table ${table}`,
-    number: table,
-    briefing: "Fill every gold seat. The cards only score in their marked places.",
+    name: "",
+    number: 0,
+    briefing: "",
     grid: BOARD_SIZE,
-    group: difficulty,
     blocked,
-    fixed,
-    hand,
-    targets,
+    fixed: allCells
+      .filter((c) => !tset.has(key(c.r, c.c)))
+      .map(({ r, c, rank, suit }) => ({ r, c, rank, suit })),
+    targets: targets.map(({ r, c, rank, suit }) => ({ r, c, rank, suit })),
+    hand: targets.map(({ rank, suit }) => ({ rank, suit })),
     win: { allPlaced: true, exactTargets: true },
   };
 }
 
 export function makeProceduralLevel(difficulty: Difficulty, table: number): Level {
-  for (let attempt = 0; attempt < 80; attempt++) {
+  for (let i = 0; i < 80; i++) {
     const level = attemptLevel(difficulty, table);
     if (level && isValidLevel(level)) return level;
   }
   return minimalCentrePair(difficulty, table);
 }
 
-export function isValidLevel(level: Level): boolean {
-  if (level.grid !== BOARD_SIZE) return false;
-  if (!level.hand.length || !level.targets?.length) return false;
-  if (level.hand.length !== level.targets.length) return false;
+function minimalCentrePair(difficulty: Difficulty, table: number): Level {
+  const deck = fisherYates(SUITS.flatMap((suit) => RANKS.map((rank) => ({ rank, suit } as RS))));
+  const cards = takeMatching(deck, (c) => c.rank === "A", 2) ?? [
+    { rank: "A" as Rank, suit: "S" as Suit },
+    { rank: "A" as Rank, suit: "H" as Suit },
+  ];
+  const fixed = [{ r: CENTRE, c: CENTRE, ...cards[0] }];
+  const targets = [{ r: CENTRE, c: CENTRE + 1, ...cards[1] }];
+  const label = difficulty[0].toUpperCase() + difficulty.slice(1);
+  return {
+    id: `endless-${difficulty}-${table}-min`,
+    campaign: "endless",
+    name: `${label} table ${table}`,
+    number: table,
+    briefing: "Fill every gold seat.",
+    grid: BOARD_SIZE,
+    group: difficulty,
+    blocked: [],
+    fixed,
+    hand: targets.map(({ rank, suit }) => ({ rank, suit })),
+    targets,
+    win: { allPlaced: true, exactTargets: true },
+  };
+}
+
+/**
+ * True only when the designed target assignment is the unique way to place the
+ * hand cards into the gold seats such that every card still participates in a
+ * valid poker run.
+ */
+function hasUniqueSolution(level: Level): boolean {
+  const targets = level.targets ?? [];
+  if (targets.length <= 1) return true;
+
+  const blockedSet = new Set((level.blocked ?? []).map((b) => key(b.r, b.c)));
+  const baseOccupied = new Map<string, RS>();
+  for (const f of level.fixed ?? []) {
+    baseOccupied.set(key(f.r, f.c), { rank: f.rank, suit: f.suit });
+  }
+
+  const cells = targets.map((t) => ({ r: t.r, c: t.c }));
+  const cards = targets.map((t) => ({ rank: t.rank, suit: t.suit }));
+  const n = cells.length;
+  const used = new Array<boolean>(n).fill(false);
+  const assign: RS[] = new Array(n);
+  let foundOther = false;
+
+  function rec(idx: number) {
+    if (foundOther) return;
+    if (idx === n) {
+      let differs = false;
+      for (let i = 0; i < n; i++) {
+        if (assign[i].rank !== cards[i].rank || assign[i].suit !== cards[i].suit) {
+          differs = true;
+          break;
+        }
+      }
+      if (!differs) return;
+      const occupied = new Map(baseOccupied);
+      for (let i = 0; i < n; i++) {
+        occupied.set(key(cells[i].r, cells[i].c), assign[i]);
+      }
+      if (everyCardInValidHand(occupied, blockedSet)) foundOther = true;
+      return;
+    }
+    for (let i = 0; i < n; i++) {
+      if (used[i]) continue;
+      used[i] = true;
+      assign[idx] = cards[i];
+      rec(idx + 1);
+      used[i] = false;
+      if (foundOther) return;
+    }
+  }
+
+  rec(0);
+  return !foundOther;
+}
+
+export function levelIssues(
+  level: Level,
+  opts: { requireCentre?: boolean; requireUnique?: boolean } = {},
+): string[] {
+  const requireCentre = opts.requireCentre !== false;
+  const requireUnique = opts.requireUnique !== false;
+  const issues: string[] = [];
+
+  if (level.grid !== BOARD_SIZE) issues.push("Board must be 11×11.");
+  if (!level.hand.length || !level.targets?.length) {
+    issues.push("Mark at least one gold seat.");
+  } else if (level.hand.length !== level.targets.length) {
+    issues.push("Hand cards must match the gold seats.");
+  }
+  if ((level.targets?.length ?? 0) > 6) issues.push("At most six gold seats.");
 
   const used = new Set<string>();
   const cards = new Set<string>();
-  const take = (r: number, c: number, rank: Rank, suit: Suit) => {
-    if (!inBounds(r, c)) return false;
+  const take = (r: number, c: number, rank: Rank, suit: Suit, label: string) => {
+    if (!inBounds(r, c)) {
+      issues.push(`${label} sits off the board.`);
+      return;
+    }
     const k = key(r, c);
-    if (used.has(k)) return false;
-    const ck = `${rank}${suit}`;
-    if (cards.has(ck)) return false;
+    if (used.has(k)) issues.push(`Two things occupy row ${r + 1}, column ${c + 1}.`);
+    if (cards.has(`${rank}${suit}`)) issues.push(`Duplicate ${rank}${suit}.`);
     used.add(k);
-    cards.add(ck);
-    return true;
+    cards.add(`${rank}${suit}`);
   };
-  for (const f of level.fixed ?? []) {
-    if (!take(f.r, f.c, f.rank, f.suit)) return false;
-  }
-  for (const t of level.targets ?? []) {
-    if (!take(t.r, t.c, t.rank, t.suit)) return false;
-  }
+  for (const f of level.fixed ?? []) take(f.r, f.c, f.rank, f.suit, "A fixed card");
+  for (const t of level.targets ?? []) take(t.r, t.c, t.rank, t.suit, "A gold seat");
   for (const b of level.blocked ?? []) {
-    if (!inBounds(b.r, b.c)) return false;
-    if (used.has(key(b.r, b.c))) return false;
-    used.add(key(b.r, b.c));
+    if (!inBounds(b.r, b.c)) issues.push("A stop sits off the board.");
+    else if (used.has(key(b.r, b.c))) issues.push("A stop overlaps a card.");
+    else used.add(key(b.r, b.c));
   }
-  const bag = [...level.hand.map((h) => `${h.rank}${h.suit}`)].sort();
-  const tbag = [...(level.targets ?? []).map((t) => `${t.rank}${t.suit}`)].sort();
-  if (bag.join() !== tbag.join()) return false;
+  const bag = [...level.hand.map((h) => `${h.rank}${h.suit}`)].sort().join();
+  const tbag = [...(level.targets ?? []).map((t) => `${t.rank}${t.suit}`)].sort().join();
+  if (level.hand.length && bag !== tbag) issues.push("Hand does not match the gold-seat cards.");
 
-  // Centre cell must be occupied
-  if (!used.has(key(CENTRE, CENTRE))) return false;
-
-  // Reconstruct placed for deeper checks
-  const allPlaced: Placed[] = [
-    ...(level.fixed ?? []).map((f) => ({ ...f, target: false })),
-    ...(level.targets ?? []).map((t) => ({ ...t, target: true })),
+  const cardCells: Cell[] = [
+    ...(level.fixed ?? []).map((f) => ({ r: f.r, c: f.c })),
+    ...(level.targets ?? []).map((t) => ({ r: t.r, c: t.c })),
   ];
+  if (cardCells.length && !cardCellsConnected(cardCells)) {
+    issues.push("Every card must touch the rest of the crossword.");
+  }
+  if (requireCentre && !cardCells.some((p) => p.r === CENTRE && p.c === CENTRE)) {
+    issues.push("A card must sit on the centre square.");
+  }
+  const occupied = new Map<string, RS>();
+  for (const f of level.fixed ?? []) occupied.set(key(f.r, f.c), { rank: f.rank, suit: f.suit });
+  for (const t of level.targets ?? []) occupied.set(key(t.r, t.c), { rank: t.rank, suit: t.suit });
+  const blockedSet = new Set((level.blocked ?? []).map((b) => key(b.r, b.c)));
+  if (occupied.size && !everyCardInValidHand(occupied, blockedSet)) {
+    issues.push("Every card must be part of a valid poker hand.");
+  }
+  if (requireUnique && (level.targets?.length ?? 0) > 0 && !hasUniqueSolution(level)) {
+    issues.push("Each gold card must have only one correct seat.");
+  }
+  return [...new Set(issues)];
+}
 
-  if (!everyCardInValidHand(allPlaced)) return false;
-  if (!isConnected(allPlaced)) return false;
-  if (!hasUniqueSolution(allPlaced)) return false;
+export function isValidLevel(level: Level): boolean {
+  return levelIssues(level).length === 0;
+}
 
-  return true;
+/** A connected crossword of scoring cards — used as the Free Play deal. */
+export function makeScoringDeal(): RS[] {
+  const diffs: Difficulty[] = ["easy", "medium", "hard"];
+  for (let i = 0; i < 80; i++) {
+    const level = attemptLevel(diffs[i % diffs.length], 1);
+    if (!level) continue;
+    const cards: RS[] = [
+      ...(level.fixed ?? []).map(({ rank, suit }) => ({ rank, suit })),
+      ...level.hand,
+    ];
+    if (cards.length >= 8 && cards.length <= 16) return cards;
+  }
+  const deck: RS[] = fisherYates(SUITS.flatMap((suit) => RANKS.map((rank) => ({ rank, suit }))));
+  const out: RS[] = [];
+  const pair = takeMatching(deck, (c) => c.rank === "A", 2);
+  const trips = takeMatching(deck, (c) => c.rank === "K", 3);
+  const two = takeMatching(deck, (c) => c.rank === "9", 2);
+  const two2 = takeMatching(deck, (c) => c.rank === "5", 2);
+  if (pair) out.push(...pair);
+  if (trips) out.push(...trips);
+  if (two) out.push(...two);
+  if (two2) out.push(...two2);
+  return out.length ? out : deck.slice(0, 12);
 }

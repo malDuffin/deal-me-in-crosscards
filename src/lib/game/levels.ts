@@ -1,5 +1,5 @@
 import imported from "./imported-levels.json";
-import { deal } from "./deck";
+import { makeScoringDeal, neededStops } from "./endless";
 import { BOARD_SIZE, type Campaign, type Level, type Rank, type Suit } from "./types";
 
 type RawLevel = {
@@ -25,6 +25,9 @@ function asSuit(s: string): Suit {
 }
 
 function hydrate(raw: RawLevel): Level {
+  const occupied = new Map<string, { rank: Rank; suit: Suit }>();
+  for (const f of raw.fixed) occupied.set(`${f.r},${f.c}`, { rank: asRank(f.rank), suit: asSuit(f.suit) });
+  for (const t of raw.targets) occupied.set(`${t.r},${t.c}`, { rank: asRank(t.rank), suit: asSuit(t.suit) });
   return {
     id: raw.id,
     campaign: raw.campaign,
@@ -33,7 +36,7 @@ function hydrate(raw: RawLevel): Level {
     briefing: raw.briefing,
     grid: raw.grid,
     group: raw.group,
-    blocked: raw.blocked,
+    blocked: neededStops(occupied),
     fixed: raw.fixed.map((f) => ({ r: f.r, c: f.c, rank: asRank(f.rank), suit: asSuit(f.suit) })),
     hand: raw.hand.map((h) => ({ rank: asRank(h.rank), suit: asSuit(h.suit) })),
     targets: raw.targets.map((t) => ({
@@ -58,10 +61,10 @@ export function makeFreeLevel(): Level {
     campaign: "free",
     name: "Free Play",
     number: 0,
-    briefing: "Twelve cards on an 11×11 table. Place them all and chase the highest score.",
+    briefing: "Place every card so they all score. Chase the highest total.",
     grid: BOARD_SIZE,
-    hand: deal(12),
-    win: { allPlaced: true },
+    hand: makeScoringDeal(),
+    win: { allPlaced: true, allScore: true },
   };
 }
 

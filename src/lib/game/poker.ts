@@ -32,13 +32,13 @@ function rankCounts(cards: Card[]): Map<string, number> {
 }
 
 function isFlush(cards: Card[]): boolean {
-  if (cards.length < 3) return false;
+  if (cards.length !== 5) return false;
   const s = cards[0].suit;
   return cards.every((c) => c.suit === s);
 }
 
 function isStraight(cards: Card[]): boolean {
-  if (cards.length < 3) return false;
+  if (cards.length !== 5) return false;
   const ranks = cards.map((c) => c.rank);
   if (new Set(ranks).size !== ranks.length) return false;
 
@@ -53,7 +53,6 @@ function isStraight(cards: Card[]): boolean {
 
   if (sequential(ACE_LOW) || sequential(ACE_HIGH)) return true;
   if (
-    cards.length === 5 &&
     ranks.includes("A") &&
     ranks.includes("2") &&
     ranks.includes("3") &&
@@ -71,6 +70,22 @@ function isRoyal(cards: Card[]): boolean {
   return (["10", "J", "Q", "K", "A"] as const).every((r) => set.has(r));
 }
 
+/** Same ranks in a run must sit in one block (7-7-A-A yes, 7-A-7-A no). */
+function ranksGrouped(cards: Card[]): boolean {
+  const first = new Map<string, number>();
+  const last = new Map<string, number>();
+  const n = new Map<string, number>();
+  cards.forEach((c, i) => {
+    if (!first.has(c.rank)) first.set(c.rank, i);
+    last.set(c.rank, i);
+    n.set(c.rank, (n.get(c.rank) ?? 0) + 1);
+  });
+  for (const [rank, count] of n) {
+    if (last.get(rank)! - first.get(rank)! + 1 !== count) return false;
+  }
+  return true;
+}
+
 /** Evaluate a consecutive run as a single poker hand (original CrossCards rule). */
 export function evaluateRun(cards: Card[]): { name: HandName; score: number } | null {
   const n = cards.length;
@@ -79,6 +94,20 @@ export function evaluateRun(cards: Card[]): { name: HandName; score: number } | 
   const counts = [...rankCounts(cards).values()].sort((a, b) => b - a);
   const flush = isFlush(cards);
   const straight = isStraight(cards);
+  const grouped = ranksGrouped(cards);
+
+  if (n === 5) {
+    if (isRoyal(cards)) return { name: "Royal Flush", score: HAND_SCORES["Royal Flush"] };
+    if (flush && straight) {
+      return { name: "Straight Flush", score: HAND_SCORES["Straight Flush"] };
+    }
+  }
+
+  if (!grouped) {
+    if (n === 5 && flush) return { name: "Flush", score: HAND_SCORES.Flush };
+    if (n === 5 && straight) return { name: "Straight", score: HAND_SCORES.Straight };
+    return null;
+  }
 
   if (n === 2) {
     if (counts[0] === 2) return { name: "Pair", score: HAND_SCORES.Pair };
@@ -89,11 +118,6 @@ export function evaluateRun(cards: Card[]): { name: HandName; score: number } | 
     if (counts[0] === 3) {
       return { name: "Three of a Kind", score: HAND_SCORES["Three of a Kind"] };
     }
-    if (flush && straight) {
-      return { name: "Straight Flush", score: HAND_SCORES["Straight Flush"] };
-    }
-    if (flush) return { name: "Flush", score: HAND_SCORES.Flush };
-    if (straight) return { name: "Straight", score: HAND_SCORES.Straight };
     return null;
   }
 
@@ -107,33 +131,15 @@ export function evaluateRun(cards: Card[]): { name: HandName; score: number } | 
     if (counts[0] === 3) {
       return { name: "Three of a Kind", score: HAND_SCORES["Three of a Kind"] };
     }
-    if (flush && straight) {
-      return { name: "Straight Flush", score: HAND_SCORES["Straight Flush"] };
-    }
-    if (flush) return { name: "Flush", score: HAND_SCORES.Flush };
-    if (straight) return { name: "Straight", score: HAND_SCORES.Straight };
     return null;
   }
 
-  // n === 5
-  if (isRoyal(cards)) return { name: "Royal Flush", score: HAND_SCORES["Royal Flush"] };
-  if (flush && straight) {
-    return { name: "Straight Flush", score: HAND_SCORES["Straight Flush"] };
-  }
-  if (counts[0] === 4) {
-    return { name: "Four of a Kind", score: HAND_SCORES["Four of a Kind"] };
-  }
+  // n === 5 — only true 5-card poker hands (no pair/trips with kickers)
   if (counts[0] === 3 && counts[1] === 2) {
     return { name: "Full House", score: HAND_SCORES["Full House"] };
   }
   if (flush) return { name: "Flush", score: HAND_SCORES.Flush };
   if (straight) return { name: "Straight", score: HAND_SCORES.Straight };
-  if (counts[0] === 3) {
-    return { name: "Three of a Kind", score: HAND_SCORES["Three of a Kind"] };
-  }
-  if (counts[0] === 2 && counts[1] === 2) {
-    return { name: "Two Pair", score: HAND_SCORES["Two Pair"] };
-  }
   return null;
 }
 
@@ -225,4 +231,29 @@ export function totalScore(hands: DetectedHand[]): number {
 
 export function cellKey(r: number, c: number): string {
   return `${r},${c}`;
+}
+
+/** Consecutive occupied stretches of 2+ cells, used for How-to example labels. */
+export function collectOccupiedRuns(
+  grid: number,
+  occupied: Set<string>,
+): { cells: Cell[]; axis: "row" | "col" }[] {
+  const out: { cells: Cell[]; axis: "row" | "col" }[] = [];
+  for (const axis of ["row", "col"] as const) {
+    for (let i = 0; i < grid; i++) {
+      let cells: Cell[] = [];
+      const flush = () => {
+        if (cells.length >= 2) out.push({ cells, axis });
+        cells = [];
+      };
+      for (let j = 0; j < grid; j++) {
+        const r = axis === "row" ? i : j;
+        const c = axis === "row" ? j : i;
+        if (occupied.has(`${r},${c}`)) cells.push({ r, c });
+        else flush();
+      }
+      flush();
+    }
+  }
+  return out;
 }

@@ -1,5 +1,5 @@
 import { Link, useNavigate } from "@tanstack/react-router";
-import { Check, ChevronLeft, RotateCcw, Settings2, Undo2, Volume2, VolumeX } from "lucide-react";
+import { Check, ChevronLeft, RotateCcw, Settings2, Share2, Undo2, Volume2, VolumeX, X } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -11,8 +11,10 @@ import {
 } from "react";
 import gsap from "gsap";
 import { makeCard } from "@/lib/game/deck";
-import { makeProceduralLevel } from "@/lib/game/endless";
+import { makeProceduralLevel, neededStops } from "@/lib/game/endless";
 import { findLevel, nextLevel } from "@/lib/game/levels";
+import { getTable } from "@/lib/game/editor-store";
+import { decodeLevel, levelShareUrl } from "@/lib/game/share";
 import {
   playBounce,
   playDeal,
@@ -23,8 +25,8 @@ import {
   playWin,
   unlockAudio,
 } from "@/lib/game/audio";
-import { dealIn, fixedDealIn, placePop, scatterElements, selectPulse, trayReorg } from "@/lib/game/juice";
-import { cellKey, scanBoard, totalScore } from "@/lib/game/poker";
+import { boardDealIn, cardSwapFly, dealIn, flyInFromOffscreen, flyOutStopRects, placePop, rejectFlyHome, scatterElements, selectPulse, teachMarkIn, trayReorg } from "@/lib/game/juice";
+import { cellKey, collectOccupiedRuns, scanBoard, totalScore } from "@/lib/game/poker";
 import { recordScore } from "@/lib/game/progress";
 import { useSettings } from "@/lib/game/settings";
 import {
@@ -48,8 +50,9 @@ import { saveHighScore } from "@/lib/scores";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { CardFace } from "./CardFace";
-import { DealingScreen } from "./DealingScreen";
 import { SettingsSheet } from "./SettingsSheet";
+import { ShareSheet } from "./ShareSheet";
+import { StopSign } from "./StopSign";
 
 const DRAG_THRESHOLD = 10;
 
@@ -139,6 +142,34 @@ function sameCell(a: Cell | "tray" | undefined, b: Cell | undefined) {
   return a.r === b.r && a.c === b.c;
 }
 
+/** Puzzle tables only accept gold seats. Free play can use any empty square. */
+function seatsLocked(campaign: Campaign, targetCount: number) {
+  return campaign !== "free" && targetCount > 0;
+}
+
+type TeachMark = {
+  ok: boolean;
+  axis: "row" | "col";
+  hang: "start" | "end";
+  cells: Cell[];
+};
+
+function howtoMarks(level: Level | null): TeachMark[] {
+  if (!level || level.campaign !== "howto") return [];
+  const grid = level.grid;
+  const mid = Math.floor(grid / 2);
+  const occ = new Set((level.fixed ?? []).map((f) => cellKey(f.r, f.c)));
+  return collectOccupiedRuns(grid, occ).flatMap((g) => {
+    const top = g.cells.every((p) => p.r < mid);
+    const bot = g.cells.every((p) => p.r > mid);
+    if (!top && !bot) return [];
+    const first = g.cells[0];
+    const hang: "start" | "end" =
+      g.axis === "row" ? (first.c === 0 ? "end" : "start") : first.r === 0 ? "end" : "start";
+    return [{ ok: top, axis: g.axis, hang, cells: g.cells }];
+  });
+}
+
 function meetsWin(
   level: Level,
   hands: DetectedHand[],
@@ -155,6 +186,11 @@ function meetsWin(
       .every((c) => sameCell(placements[c.id], targets[c.id]));
   }
   if (w.allPlaced && !trayEmpty) return false;
+  if (w.allScore) {
+    const scoring = new Set(hands.flatMap((h) => h.cardIds));
+    const placed = cards.filter((c) => placements[c.id] && placements[c.id] !== "tray");
+    if (!placed.length || placed.some((c) => !scoring.has(c.id))) return false;
+  }
   if (w.minScore != null && score < w.minScore) return false;
   const names = hands.map((h) => h.name);
   const count = (n: string) => names.filter((x) => x === n).length;
@@ -183,6 +219,7 @@ function campaignLabel(campaign: Campaign, difficulty?: Difficulty) {
   if (campaign === "training") return "Training";
   if (campaign === "puzzle") return "Puzzle";
   if (campaign === "endless") return `Endless · ${DIFFICULTY_LABEL[difficulty ?? "easy"]}`;
+  if (campaign === "custom") return "Custom table";
   return "Free play";
 }
 
@@ -209,65 +246,83 @@ export function PlaySession({
   campaign,
   levelId,
   difficulty = "easy",
+  share,
 }: {
   campaign: Campaign;
   levelId?: string;
   difficulty?: Difficulty;
+  share?: string;
 }) {
   const navigate = useNavigate();
   const [dealKey, setDealKey] = useState(0);
-  const [endlessLevel, setEndlessLevel] = useState<Level | null>(null);
-  const [endlessLoading, setEndlessLoading] = useState(campaign === "endless");
+  const [endlessLevel, setEndlessLevel] = useState<Level | null>(() =>
+    campaign === "endless" ? makeProceduralLevel(difficulty, 1) : null,
+  );
   const [tableNo, setTableNo] = useState(1);
-  const [revealDeal, setRevealDeal] = useState(campaign !== "endless");
-  const [dealPace, setDealPace] = useState<"full" | "quick">("full");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const cardStyle = useSettings((s) => s.cardStyle);
   const muted = useSettings((s) => s.muted);
   const setMuted = useSettings((s) => s.setMuted);
   const nextCache = useRef<{ n: number; difficulty: Difficulty; level: Level } | null>(null);
 
   const staticLevel = useMemo(
-    () => (campaign === "endless" ? null : findLevel(campaign, levelId)),
+    () => (campaign === "endless" || campaign === "custom" ? null : findLevel(campaign, levelId)),
     [campaign, levelId, dealKey],
   );
-  const level = campaign === "endless" ? endlessLevel : staticLevel;
+  const sharedLevel = useMemo(() => {
+    if (campaign !== "custom" || !share) return null;
+    return decodeLevel(share);
+  }, [campaign, share]);
+  const [savedLevel, setSavedLevel] = useState<Level | null>(null);
+  const [savedReady, setSavedReady] = useState(!(campaign === "custom" && !share && !!levelId));
+  useEffect(() => {
+    if (campaign === "custom" && !share && levelId) {
+      setSavedLevel(getTable(levelId)?.level ?? null);
+    } else {
+      setSavedLevel(null);
+    }
+    setSavedReady(true);
+  }, [campaign, share, levelId]);
+  const customLevel = share ? sharedLevel : savedLevel;
+  const level = campaign === "endless" ? endlessLevel : campaign === "custom" ? customLevel : staticLevel;
 
   const loadEndless = useCallback(
     (n: number) => {
       const cached = nextCache.current;
-      const hit = cached && cached.n === n && cached.difficulty === difficulty;
+      const hit = !!(cached && cached.n === n && cached.difficulty === difficulty);
       setTableNo(n);
-      setRevealDeal(false);
-      setDealPace(hit ? "quick" : "full");
-      if (hit && cached) {
-        nextCache.current = null;
-        setEndlessLevel(cached.level);
-        setEndlessLoading(false);
+      const next = hit && cached ? cached.level : makeProceduralLevel(difficulty, n);
+      if (hit) nextCache.current = null;
+      setEndlessLevel(next);
+      window.setTimeout(() => {
         nextCache.current = {
           n: n + 1,
           difficulty,
           level: makeProceduralLevel(difficulty, n + 1),
         };
-        return;
-      }
-      setEndlessLoading(true);
-      const lvl = makeProceduralLevel(difficulty, n);
-      setEndlessLevel(lvl);
-      setEndlessLoading(false);
-      nextCache.current = {
-        n: n + 1,
-        difficulty,
-        level: makeProceduralLevel(difficulty, n + 1),
-      };
+      }, 40);
     },
     [difficulty],
   );
 
+  const endlessBoot = useRef(false);
   useEffect(() => {
     nextCache.current = null;
-    if (campaign === "endless") loadEndless(1);
-  }, [campaign, loadEndless]);
+    if (campaign !== "endless") return;
+    if (!endlessBoot.current) {
+      endlessBoot.current = true;
+      window.setTimeout(() => {
+        nextCache.current = {
+          n: 2,
+          difficulty,
+          level: makeProceduralLevel(difficulty, 2),
+        };
+      }, 40);
+      return;
+    }
+    loadEndless(1);
+  }, [campaign, loadEndless, difficulty]);
 
   const built = useMemo(
     () =>
@@ -277,19 +332,20 @@ export function PlaySession({
     [level],
   );
   const cards = built.cards;
-  const blocked = built.blocked;
   const targets = built.targets;
   const grid = level?.grid ?? 11;
   const [placements, setPlacements] = useState<Placement>(built.placements);
   const [history, setHistory] = useState<Placement[]>([]);
   const [drag, setDrag] = useState<DragState | null>(null);
   const [hoverCell, setHoverCell] = useState<Cell | null>(null);
+  const [hoverSwapId, setHoverSwapId] = useState<string | null>(null);
   const [selectedCard, setSelectedCard] = useState<string | null>(null);
   const [selectedSlot, setSelectedSlot] = useState<Cell | null>(null);
   const [won, setWon] = useState(false);
   const [showWinUi, setShowWinUi] = useState(false);
   const [toast, setToast] = useState(level?.briefing ?? "");
   const wrapRef = useRef<HTMLDivElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
   const trayRef = useRef<HTMLDivElement>(null);
   const winBoxRef = useRef<HTMLDivElement>(null);
   const winOverlayRef = useRef<HTMLDivElement>(null);
@@ -300,19 +356,118 @@ export function PlaySession({
   const pendingWin = useRef(false);
   const lastPop = useRef<string | null>(null);
   const trayPrevRects = useRef<Map<string, DOMRect>>(new Map());
+  const skipTrayReorg = useRef(true);
+  const swappingRef = useRef(false);
+  const placementsRef = useRef<Placement>({});
+  const bounceTimer = useRef<number | null>(null);
+  const bounceHomeRef = useRef<(ids: string[], before: Map<string, DOMRect>) => void>(() => {});
+  const [shownSig, setShownSig] = useState("");
 
   const targetKeys = useMemo(() => {
     const s = new Set<string>();
     for (const t of Object.values(targets)) s.add(cellKey(t.r, t.c));
     return s;
   }, [targets]);
+  const goldOnly = seatsLocked(campaign, targetKeys.size);
+  placementsRef.current = placements;
+  const tableSig = `${level?.id ?? ""}:${campaign}`;
+  const awaitingDeal = shownSig !== tableSig;
+
+  const scanPlacements = useMemo(() => {
+    if (!drag) return placements;
+    const copy = { ...placements };
+    copy[drag.id] = "tray";
+    return copy;
+  }, [placements, drag]);
+
+  /** Live caps from the cards currently on the felt — lift one and leftover stops fly off. */
+  const blocked = useMemo(() => {
+    const occupied = new Map<string, { rank: Rank; suit: Suit }>();
+    for (const c of cards) {
+      const p = scanPlacements[c.id];
+      if (p && p !== "tray") occupied.set(cellKey(p.r, p.c), { rank: c.rank, suit: c.suit });
+    }
+    const set = new Set<string>();
+    for (const s of neededStops(occupied)) {
+      const k = cellKey(s.r, s.c);
+      if (targetKeys.has(k)) continue;
+      set.add(k);
+    }
+    return set;
+  }, [cards, scanPlacements, targetKeys]);
+
+  const prevBlockedRef = useRef<Set<string>>(new Set());
+  const stopRectsRef = useRef<Map<string, DOMRect>>(new Map());
+  const stopTableRef = useRef(tableSig);
+  if (stopTableRef.current !== tableSig) {
+    stopTableRef.current = tableSig;
+    prevBlockedRef.current = new Set();
+    stopRectsRef.current = new Map();
+  }
+
+  useLayoutEffect(() => {
+    const prev = prevBlockedRef.current;
+    const leaving: string[] = [];
+    const entering: string[] = [];
+    for (const k of prev) if (!blocked.has(k)) leaving.push(k);
+    for (const k of blocked) if (!prev.has(k)) entering.push(k);
+
+    if (leaving.length && !awaitingDeal) {
+      const rects = leaving
+        .map((k) => stopRectsRef.current.get(k))
+        .filter((r): r is DOMRect => !!r && r.width > 1 && r.height > 1);
+      void flyOutStopRects(rects, { origin: "random", stagger: 0.04 });
+    }
+
+    prevBlockedRef.current = new Set(blocked);
+
+    const cache = new Map<string, DOMRect>();
+    wrapRef.current?.querySelectorAll<HTMLElement>("[data-fly-stop]").forEach((el) => {
+      const k = el.dataset.stopKey;
+      if (k) cache.set(k, el.getBoundingClientRect());
+    });
+    stopRectsRef.current = cache;
+
+    if (entering.length && !awaitingDeal) {
+      const els = entering
+        .map((k) =>
+          [...(wrapRef.current?.querySelectorAll<HTMLElement>("[data-fly-stop]") ?? [])].find(
+            (el) => el.dataset.stopKey === k,
+          ),
+        )
+        .filter((el): el is HTMLElement => !!el);
+      for (const el of els) el.style.visibility = "hidden";
+      void flyInFromOffscreen(els, { origin: "random", stagger: 0.04 }).then(() => {
+        for (const el of els) el.style.visibility = "";
+      });
+    }
+  }, [blocked, awaitingDeal]);
+
+  useLayoutEffect(() => {
+    const cache = new Map<string, DOMRect>();
+    wrapRef.current?.querySelectorAll<HTMLElement>("[data-fly-stop]").forEach((el) => {
+      const k = el.dataset.stopKey;
+      if (k) cache.set(k, el.getBoundingClientRect());
+    });
+    stopRectsRef.current = cache;
+  }, [blocked, scale, awaitingDeal, shownSig]);
+
+  const canSeat = useCallback(
+    (r: number, c: number, skipId?: string) => {
+      if (blocked.has(cellKey(r, c))) return false;
+      if (occupiedAt(placements, r, c, skipId)) return false;
+      if (goldOnly && !targetKeys.has(cellKey(r, c))) return false;
+      return true;
+    },
+    [blocked, placements, goldOnly, targetKeys],
+  );
 
   const clearSelect = useCallback(() => {
     setSelectedCard(null);
     setSelectedSlot(null);
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setPlacements(built.placements);
     setHistory([]);
     setWon(false);
@@ -323,40 +478,86 @@ export function PlaySession({
     pendingRef.current = null;
     setSelectedCard(null);
     setSelectedSlot(null);
+    setHoverSwapId(null);
     prevHands.current = "";
+    skipTrayReorg.current = true;
     trayPrevRects.current = new Map();
-    requestAnimationFrame(() => {
-      const boardEls = [...(wrapRef.current?.querySelectorAll<HTMLElement>("[data-fly-card][data-on-board]") ?? [])];
-      const trayEls = [...(trayRef.current?.querySelectorAll<HTMLElement>("[data-fly-card]") ?? [])];
-      fixedDealIn(boardEls);
-      dealIn(trayEls);
-      if (trayEls.length) playDeal();
-      requestAnimationFrame(() => {
-        const els = [...(trayRef.current?.querySelectorAll<HTMLElement>("[data-card-id]") ?? [])];
-        const map = new Map<string, DOMRect>();
-        for (const el of els) {
-          const id = el.dataset.cardId;
-          if (id) map.set(id, el.getBoundingClientRect());
-        }
-        trayPrevRects.current = map;
-      });
-    });
+    if (bounceTimer.current) {
+      window.clearTimeout(bounceTimer.current);
+      bounceTimer.current = null;
+    }
   }, [built, level?.briefing]);
+
+  useLayoutEffect(() => {
+    if (campaign === "endless" && !level) return;
+    if (!awaitingDeal) return;
+    if (placements !== built.placements) return;
+    const boardEls = [...(wrapRef.current?.querySelectorAll("[data-fly-card][data-on-board]") ?? [])];
+    const trayEls = [...(trayRef.current?.querySelectorAll("[data-fly-card]") ?? [])] as HTMLElement[];
+    const marks = [...(wrapRef.current?.querySelectorAll("[data-teach-mark]") ?? [])];
+    const stopEls = [...(wrapRef.current?.querySelectorAll("[data-fly-stop]") ?? [])];
+    if (!boardEls.length && !trayEls.length && !marks.length && !stopEls.length) {
+      setShownSig(tableSig);
+      skipTrayReorg.current = false;
+      return;
+    }
+    if (boardEls.length || trayEls.length) playDeal();
+    if (boardEls.length || stopEls.length) playWhoosh();
+    void Promise.all([
+      boardDealIn([...boardEls, ...stopEls]),
+      dealIn(trayEls),
+      teachMarkIn(marks),
+    ]).then(() => {
+      const landed = [...boardEls, ...trayEls, ...marks, ...stopEls].filter(
+        (el): el is HTMLElement => el instanceof HTMLElement,
+      );
+      for (const el of landed) el.style.visibility = "visible";
+      setShownSig(tableSig);
+      requestAnimationFrame(() => {
+        for (const el of landed) el.style.visibility = "";
+      });
+      const seeded = new Map<string, DOMRect>();
+      for (const el of trayEls) {
+        const id = el.dataset.cardId;
+        if (id) seeded.set(id, el.getBoundingClientRect());
+      }
+      trayPrevRects.current = seeded;
+      skipTrayReorg.current = false;
+    });
+  }, [awaitingDeal, tableSig, placements, built.placements, campaign]);
 
   const cardsById = useMemo(() => new Map(cards.map((c) => [c.id, c])), [cards]);
 
-  const scanPlacements = useMemo(() => {
-    if (!drag) return placements;
-    const copy = { ...placements };
-    copy[drag.id] = "tray";
-    return copy;
-  }, [placements, drag]);
-
-  const hands = useMemo(
-    () => scanBoard(grid, blocked, scanPlacements, cardsById),
-    [grid, blocked, scanPlacements, cardsById],
-  );
+  const hands = useMemo(() => {
+    const found = scanBoard(grid, blocked, scanPlacements, cardsById);
+    if (campaign !== "howto") return found;
+    const mid = Math.floor(grid / 2);
+    return found.filter((h) => {
+      const top = h.cells.every((p) => p.r < mid);
+      const bot = h.cells.every((p) => p.r > mid);
+      return !top && !bot;
+    });
+  }, [grid, blocked, scanPlacements, cardsById, campaign]);
   const score = totalScore(hands);
+  const teachMarks = useMemo(() => howtoMarks(level), [level]);
+  const teachByCell = useMemo(() => {
+    const m = new Map<string, TeachMark[]>();
+    for (const mark of teachMarks) {
+      const anchor = mark.hang === "start" ? mark.cells[0] : mark.cells[mark.cells.length - 1];
+      const k = cellKey(anchor.r, anchor.c);
+      const list = m.get(k) ?? [];
+      list.push(mark);
+      m.set(k, list);
+    }
+    return m;
+  }, [teachMarks]);
+  const teachOutline = useMemo(() => {
+    const m = new Map<string, boolean>();
+    for (const mark of teachMarks) {
+      for (const p of mark.cells) m.set(cellKey(p.r, p.c), mark.ok);
+    }
+    return m;
+  }, [teachMarks]);
   const highlighted = useMemo(() => {
     const s = new Set<string>();
     for (const h of hands) for (const c of h.cells) s.add(cellKey(c.r, c.c));
@@ -367,13 +568,12 @@ export function PlaySession({
     .filter((c) => placements[c.id] === "tray")
     .slice()
     .sort(sortHighToLow);
+  const trayOrderKey = trayCards.map((c) => c.id).join("|");
   const trayEmpty = cards.every((c) => c.fixed || placements[c.id] !== "tray");
 
-  const trayOrderKey = trayCards.map((c) => c.id).join(",");
-
   useLayoutEffect(() => {
-    if (!trayRef.current) return;
-    const els = [...trayRef.current.querySelectorAll<HTMLElement>("[data-card-id]")];
+    const els = [...(trayRef.current?.querySelectorAll("[data-fly-card]") ?? [])] as HTMLElement[];
+    if (skipTrayReorg.current) return;
     trayPrevRects.current = trayReorg(els, trayPrevRects.current);
   }, [trayOrderKey]);
 
@@ -445,7 +645,13 @@ export function PlaySession({
   }, [hands, spawnFloats]);
 
   useEffect(() => {
-    if (!level || won || drag || endlessLoading) return;
+    if (!level || won || drag || !trayEmpty) {
+      if (bounceTimer.current) {
+        window.clearTimeout(bounceTimer.current);
+        bounceTimer.current = null;
+      }
+    }
+    if (!level || won || drag) return;
     if (cards.some((c) => placements[c.id] == null)) return;
     if (meetsWin(level, hands, trayEmpty, score, cards, placements, targets)) {
       setWon(true);
@@ -458,24 +664,35 @@ export function PlaySession({
       return;
     }
     if (level.win.exactTargets && trayEmpty && history.length > 0) {
-      const next = { ...placements };
-      let bounced = 0;
-      for (const c of cards) {
-        if (c.fixed) continue;
-        if (!sameCell(next[c.id], targets[c.id])) {
-          next[c.id] = "tray";
-          bounced++;
+      if (bounceTimer.current != null) return;
+      bounceTimer.current = window.setTimeout(() => {
+        bounceTimer.current = null;
+        const curr = placementsRef.current;
+        const next = { ...curr };
+        const before = new Map<string, DOMRect>();
+        const ids: string[] = [];
+        for (const c of cards) {
+          if (c.fixed) continue;
+          if (!sameCell(next[c.id], targets[c.id])) {
+            const el = document.querySelector(`[data-card-id="${c.id}"]`);
+            if (el instanceof HTMLElement) before.set(c.id, el.getBoundingClientRect());
+            next[c.id] = "tray";
+            ids.push(c.id);
+          }
         }
-      }
-      if (bounced) {
+        if (!ids.length) return;
         setPlacements(next);
         setSelectedCard(null);
         setSelectedSlot(null);
         playBounce();
+        playWhoosh();
         setToast("Not the right seats — those cards return to your hand.");
-      }
+        bounceHomeRef.current(ids, before);
+      }, 680);
+    } else if (level.win.allScore && trayEmpty) {
+      setToast("Every card must sit in a scoring hand.");
     }
-  }, [hands, trayEmpty, drag, score, level, won, cards, placements, targets, endlessLoading, revealWin, history.length]);
+  }, [hands, trayEmpty, drag, score, level, won, cards, placements, targets, revealWin, history.length]);
 
   useEffect(() => {
     if (!showWinUi) return;
@@ -486,20 +703,22 @@ export function PlaySession({
     gsap.fromTo(box, { y: 28, opacity: 0 }, { y: 0, opacity: 1, duration: 0.38, ease: "back.out(1.5)" });
   }, [showWinUi]);
 
-  useEffect(() => {
-    const el = wrapRef.current;
-    if (!el) return;
-    const innerW = grid * CELL_W + (grid - 1) * CELL_GAP + BOARD_PAD * 2 + BOARD_RAIL * 2;
-    const innerH = grid * CELL_H + (grid - 1) * CELL_GAP + BOARD_PAD * 2 + BOARD_RAIL * 2;
+  useLayoutEffect(() => {
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+    const boardW = grid * CELL_W + (grid - 1) * CELL_GAP + BOARD_PAD * 2 + BOARD_RAIL * 2;
+    const boardH = grid * CELL_H + (grid - 1) * CELL_GAP + BOARD_PAD * 2 + BOARD_RAIL * 2;
     const measure = () => {
-      const s = Math.min(1.25, el.clientWidth / innerW, el.clientHeight / innerH);
-      setScale(Number.isFinite(s) && s > 0 ? s : 1);
+      const availW = Math.max(1, wrap.clientWidth - 4);
+      const availH = Math.max(1, wrap.clientHeight - 4);
+      const s = Math.min(availW / boardW, availH / boardH);
+      setScale(Number.isFinite(s) && s > 0 ? s : 0.4);
     };
     measure();
     const ro = new ResizeObserver(measure);
-    ro.observe(el);
+    ro.observe(wrap);
     return () => ro.disconnect();
-  }, [grid]);
+  }, [grid, level]);
 
   const commit = useCallback(
     (next: Placement, placedId?: string) => {
@@ -511,7 +730,93 @@ export function PlaySession({
     [placements],
   );
 
-  useEffect(() => {
+  const flyAfter = useCallback((ids: string[], before: Map<string, DOMRect>) => {
+    swappingRef.current = true;
+    skipTrayReorg.current = true;
+    requestAnimationFrame(() => {
+      const shots: { node: HTMLElement; from: DOMRect; to: DOMRect }[] = [];
+      for (const id of ids) {
+        const el = document.querySelector(`[data-card-id="${id}"]`);
+        const from = before.get(id);
+        if (!(el instanceof HTMLElement) || !from) continue;
+        shots.push({ node: el, from, to: el.getBoundingClientRect() });
+      }
+      void cardSwapFly(shots).finally(() => {
+        for (const s of shots) s.node.style.visibility = "";
+        swappingRef.current = false;
+        const trayEls = [...(trayRef.current?.querySelectorAll("[data-fly-card]") ?? [])] as HTMLElement[];
+        const seeded = new Map<string, DOMRect>();
+        for (const el of trayEls) {
+          const id = el.dataset.cardId;
+          if (id) seeded.set(id, el.getBoundingClientRect());
+        }
+        trayPrevRects.current = seeded;
+        skipTrayReorg.current = false;
+      });
+    });
+  }, []);
+
+  const bounceHome = useCallback((ids: string[], before: Map<string, DOMRect>) => {
+    swappingRef.current = true;
+    skipTrayReorg.current = true;
+    requestAnimationFrame(() => {
+      const shots: { node: HTMLElement; from: DOMRect; to: DOMRect }[] = [];
+      for (const id of ids) {
+        const el = document.querySelector(`[data-card-id="${id}"]`);
+        const from = before.get(id);
+        if (!(el instanceof HTMLElement) || !from) continue;
+        shots.push({ node: el, from, to: el.getBoundingClientRect() });
+      }
+      void rejectFlyHome(shots).finally(() => {
+        for (const s of shots) s.node.style.visibility = "";
+        swappingRef.current = false;
+        const trayEls = [...(trayRef.current?.querySelectorAll("[data-fly-card]") ?? [])] as HTMLElement[];
+        const seeded = new Map<string, DOMRect>();
+        for (const el of trayEls) {
+          const id = el.dataset.cardId;
+          if (id) seeded.set(id, el.getBoundingClientRect());
+        }
+        trayPrevRects.current = seeded;
+        skipTrayReorg.current = false;
+      });
+    });
+  }, []);
+  bounceHomeRef.current = bounceHome;
+
+  const captureRect = (id: string) => {
+    const el = document.querySelector(`[data-card-id="${id}"]`);
+    return el instanceof HTMLElement ? el.getBoundingClientRect() : null;
+  };
+
+  const doSwap = useCallback(
+    (idA: string, idB: string) => {
+      if (won || swappingRef.current) return false;
+      if (idA === idB) return false;
+      const a = cardsById.get(idA);
+      const b = cardsById.get(idB);
+      if (!a || !b || a.fixed || b.fixed) return false;
+      const posA = placements[idA];
+      const posB = placements[idB];
+      if (posA == null || posB == null) return false;
+      if (posA === "tray" && posB === "tray") return false;
+      const next = { ...placements, [idA]: posB, [idB]: posA };
+      const before = new Map<string, DOMRect>();
+      const ra = captureRect(idA);
+      const rb = captureRect(idB);
+      if (ra) before.set(idA, ra);
+      if (rb) before.set(idB, rb);
+      setHistory((h) => [...h, placements]);
+      setPlacements(next);
+      setSelectedCard(null);
+      setSelectedSlot(null);
+      playWhoosh();
+      flyAfter([idA, idB], before);
+      return true;
+    },
+    [won, cardsById, placements, flyAfter],
+  );
+
+  useLayoutEffect(() => {
     if (!lastPop.current) return;
     const el = document.querySelector(`[data-card-id="${lastPop.current}"]`);
     placePop(el);
@@ -526,26 +831,51 @@ export function PlaySession({
 
   const tryPlace = useCallback(
     (cardId: string, dest: Cell | "tray") => {
+      if (won || swappingRef.current) return false;
+      const from = placements[cardId];
       if (dest !== "tray") {
-        if (blocked.has(cellKey(dest.r, dest.c))) return false;
-        if (occupiedAt(placements, dest.r, dest.c, cardId)) return false;
+        const occ = occupiedAt(placements, dest.r, dest.c, cardId);
+        if (occ) return doSwap(cardId, occ);
+        if (!canSeat(dest.r, dest.c, cardId)) return false;
       }
       const next = { ...placements, [cardId]: dest };
       if (JSON.stringify(next) === JSON.stringify(placements)) return false;
+      const goingHome = dest === "tray" && from !== "tray";
+      if (goingHome) {
+        const before = new Map<string, DOMRect>();
+        const r = captureRect(cardId);
+        if (r) before.set(cardId, r);
+        setHistory((h) => [...h, placements]);
+        setPlacements(next);
+        setSelectedCard(null);
+        setSelectedSlot(null);
+        playWhoosh();
+        flyAfter([cardId], before);
+        return true;
+      }
       commit(next, dest === "tray" ? undefined : cardId);
       setSelectedCard(null);
       setSelectedSlot(null);
       return true;
     },
-    [blocked, placements, commit],
+    [canSeat, placements, commit, doSwap, flyAfter, won],
   );
 
   const onCardTap = useCallback(
     (card: Card) => {
-      if (card.fixed) return;
+      if (card.fixed || won || swappingRef.current) return;
       if (selectedSlot) {
         tryPlace(card.id, selectedSlot);
         return;
+      }
+      if (selectedCard && selectedCard !== card.id) {
+        const from = placements[selectedCard];
+        const to = placements[card.id];
+        if (from === "tray" && to === "tray") {
+          setSelectedCard(card.id);
+          return;
+        }
+        if (doSwap(selectedCard, card.id)) return;
       }
       if (selectedCard === card.id) {
         setSelectedCard(null);
@@ -554,13 +884,18 @@ export function PlaySession({
       setSelectedCard(card.id);
       setSelectedSlot(null);
     },
-    [selectedSlot, selectedCard, tryPlace],
+    [selectedSlot, selectedCard, tryPlace, doSwap, placements, won],
   );
 
   const onSlotTap = useCallback(
     (cell: Cell) => {
-      if (blocked.has(cellKey(cell.r, cell.c))) return;
-      if (occupiedAt(placements, cell.r, cell.c)) return;
+      if (won || swappingRef.current) return;
+      const occ = occupiedAt(placements, cell.r, cell.c);
+      if (occ && selectedCard) {
+        doSwap(selectedCard, occ);
+        return;
+      }
+      if (!canSeat(cell.r, cell.c)) return;
       if (selectedCard) {
         tryPlace(selectedCard, cell);
         return;
@@ -572,11 +907,17 @@ export function PlaySession({
       setSelectedSlot(cell);
       setSelectedCard(null);
     },
-    [blocked, placements, selectedCard, selectedSlot, tryPlace],
+    [canSeat, selectedCard, selectedSlot, tryPlace, doSwap, placements, won],
   );
 
+  const returnToHand = useCallback(() => {
+    if (!selectedCard || won || swappingRef.current) return;
+    if (placements[selectedCard] === "tray") return;
+    tryPlace(selectedCard, "tray");
+  }, [selectedCard, placements, tryPlace, won]);
+
   const onPointerDown = (e: ReactPointerEvent, card: Card) => {
-    if (card.fixed || won) return;
+    if (card.fixed || won || swappingRef.current) return;
     if (e.button !== 0 && e.pointerType === "mouse") return;
     e.preventDefault();
     e.stopPropagation();
@@ -591,6 +932,46 @@ export function PlaySession({
       grabX: e.clientX - rect.left,
       grabY: e.clientY - rect.top,
       origin: origin === "tray" || !origin ? "tray" : origin,
+    };
+  };
+
+  const ghostBox = (x: number, y: number, grabX: number, grabY: number) =>
+    new DOMRect(x - grabX, y - grabY, CELL_W * scale, CELL_H * scale);
+
+  const overlapArea = (a: DOMRect, b: DOMRect) => {
+    const w = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
+    const h = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+    return w * h;
+  };
+
+  const hitFromBox = (box: DOMRect, skipId?: string) => {
+    const min = box.width * box.height * 0.16;
+    let bestCard: { id: string; area: number } | null = null;
+    let bestCell: { r: number; c: number; area: number } | null = null;
+    let trayArea = 0;
+
+    for (const n of document.querySelectorAll<HTMLElement>("[data-card-id]")) {
+      const id = n.dataset.cardId;
+      if (!id || id === skipId) continue;
+      const area = overlapArea(box, n.getBoundingClientRect());
+      if (area < min) continue;
+      if (!bestCard || area > bestCard.area) bestCard = { id, area };
+    }
+    for (const n of document.querySelectorAll<HTMLElement>("[data-cell]")) {
+      if (n.dataset.r == null || n.dataset.c == null) continue;
+      const area = overlapArea(box, n.getBoundingClientRect());
+      if (area < min) continue;
+      if (!bestCell || area > bestCell.area) {
+        bestCell = { r: Number(n.dataset.r), c: Number(n.dataset.c), area };
+      }
+    }
+    const trayEl = trayRef.current;
+    if (trayEl) trayArea = overlapArea(box, trayEl.getBoundingClientRect());
+
+    return {
+      cardId: bestCard?.id ?? null,
+      cell: bestCell ? { r: bestCell.r, c: bestCell.c } : null,
+      tray: trayArea >= min && (!bestCell || trayArea > bestCell.area),
     };
   };
 
@@ -614,13 +995,17 @@ export function PlaySession({
     }
     if (!drag) return;
     setDrag((d) => (d ? { ...d, x: e.clientX, y: e.clientY } : d));
-    const stack = document.elementsFromPoint(e.clientX, e.clientY);
-    const hit = stack.find((n) => n instanceof HTMLElement && n.dataset.cell);
-    if (hit instanceof HTMLElement && hit.dataset.r && hit.dataset.c) {
-      setHoverCell({ r: Number(hit.dataset.r), c: Number(hit.dataset.c) });
-    } else {
-      setHoverCell(null);
+    const hit = hitFromBox(ghostBox(e.clientX, e.clientY, drag.grabX, drag.grabY), drag.id);
+    if (hit.cardId) {
+      const other = cardsById.get(hit.cardId);
+      if (other && !other.fixed) {
+        setHoverSwapId(hit.cardId);
+        setHoverCell(null);
+        return;
+      }
     }
+    setHoverSwapId(null);
+    setHoverCell(hit.cell);
   };
 
   const onPointerUp = (e: ReactPointerEvent) => {
@@ -628,26 +1013,28 @@ export function PlaySession({
     const pending = pendingRef.current;
     pendingRef.current = null;
     if (drag) {
-      const stack = document.elementsFromPoint(e.clientX, e.clientY);
-      const hit = stack.find((n) => n instanceof HTMLElement && n.dataset.cell);
+      const hit = hitFromBox(ghostBox(e.clientX, e.clientY, drag.grabX, drag.grabY), drag.id);
+      setDrag(null);
+      setHoverCell(null);
+      setHoverSwapId(null);
+      if (hit.cardId && hit.cardId !== drag.id) {
+        if (doSwap(drag.id, hit.cardId)) return;
+      }
       let dest: Cell | "tray" = "tray";
-      if (hit instanceof HTMLElement && hit.dataset.r && hit.dataset.c) {
-        const r = Number(hit.dataset.r);
-        const c = Number(hit.dataset.c);
-        if (!blocked.has(cellKey(r, c)) && !occupiedAt(placements, r, c, drag.id)) {
-          dest = { r, c };
-        } else {
-          dest = drag.origin;
-        }
-      } else if (stack.some((n) => n instanceof HTMLElement && n.dataset.tray === "1")) {
+      if (hit.cell) {
+        if (canSeat(hit.cell.r, hit.cell.c, drag.id)) dest = hit.cell;
+        else dest = drag.origin;
+      } else if (hit.tray) {
         dest = "tray";
       } else {
         dest = drag.origin;
       }
+      if (dest === "tray" && drag.origin !== "tray") {
+        tryPlace(drag.id, "tray");
+        return;
+      }
       const next = { ...placements, [drag.id]: dest };
       const placedId = dest !== "tray" && JSON.stringify(next) !== JSON.stringify(placements) ? drag.id : undefined;
-      setDrag(null);
-      setHoverCell(null);
       if (JSON.stringify(next) !== JSON.stringify(placements)) commit(next, placedId);
       return;
     }
@@ -718,16 +1105,23 @@ export function PlaySession({
   const remain = cards.filter((c) => !c.fixed).length;
   const placed = remain - trayCards.length;
 
-  if (campaign === "endless" && (!revealDeal || endlessLoading || !level)) {
+  if (campaign === "endless" && !level) {
+    return <div className="felt-bg h-dvh" />;
+  }
+
+  if (campaign === "custom" && !savedReady) return null;
+
+  if (campaign === "custom" && !level) {
     return (
-      <DealingScreen
-        key={`${difficulty}-${tableNo}`}
-        difficulty={difficulty}
-        table={tableNo}
-        loaded={!endlessLoading && !!endlessLevel}
-        pace={dealPace}
-        onFinished={() => setRevealDeal(true)}
-      />
+      <div className="felt-bg relative flex h-dvh flex-col items-center justify-center px-6 text-center">
+        <p className="font-display text-2xl font-semibold tracking-tight">This table is missing</p>
+        <p className="mt-2 max-w-sm text-sm text-fg-muted">
+          The share link is broken, or the saved table is no longer on this device.
+        </p>
+        <Button className="mt-6" asChild>
+          <Link to="/">Back to lobby</Link>
+        </Button>
+      </div>
     );
   }
 
@@ -736,26 +1130,34 @@ export function PlaySession({
   return (
     <div className="felt-bg relative flex h-dvh flex-col overflow-hidden">
       <div className="felt-noise absolute inset-0" />
-      <header className="relative z-10 flex items-center justify-between gap-3 px-3 py-2">
+      <header className="relative z-10 flex shrink-0 items-center justify-between gap-2 px-2 py-1">
         <Link
           to="/"
-          className="inline-flex size-11 items-center justify-center rounded-xl text-fg-muted hover:bg-fg/5 hover:text-fg"
+          className="inline-flex size-10 items-center justify-center rounded-xl text-fg-muted hover:bg-fg/5 hover:text-fg"
           aria-label="Back"
         >
           <ChevronLeft className="size-5" />
         </Link>
         <div className="min-w-0 text-center">
-          <p className="text-[11px] uppercase tracking-[0.18em] text-fg-subtle">
+          <p className="text-[10px] uppercase tracking-[0.18em] text-fg-subtle">
             {campaignLabel(campaign, difficulty)}
             {level.number ? `  ·  ${level.number}` : ""}
             {campaign === "puzzle" && level.group ? `  ·  ${level.group}` : ""}
           </p>
-          <h1 className="font-display text-lg font-semibold tracking-tight">{level.name}</h1>
+          <h1 className="truncate font-display text-base font-semibold tracking-tight sm:text-lg">{level.name}</h1>
         </div>
         <div className="flex items-center">
           <button
             type="button"
-            className="inline-flex size-11 items-center justify-center rounded-xl text-fg-muted hover:bg-fg/5 hover:text-fg"
+            className="inline-flex size-10 items-center justify-center rounded-xl text-fg-muted hover:bg-fg/5 hover:text-fg"
+            aria-label="Share"
+            onClick={() => setShareOpen(true)}
+          >
+            <Share2 className="size-5" />
+          </button>
+          <button
+            type="button"
+            className="inline-flex size-10 items-center justify-center rounded-xl text-fg-muted hover:bg-fg/5 hover:text-fg"
             aria-label={muted ? "Unmute" : "Mute"}
             onClick={() => {
               unlockAudio();
@@ -766,7 +1168,7 @@ export function PlaySession({
           </button>
           <button
             type="button"
-            className="inline-flex size-11 items-center justify-center rounded-xl text-fg-muted hover:bg-fg/5 hover:text-fg"
+            className="inline-flex size-10 items-center justify-center rounded-xl text-fg-muted hover:bg-fg/5 hover:text-fg"
             aria-label="Settings"
             onClick={() => setSettingsOpen(true)}
           >
@@ -775,23 +1177,23 @@ export function PlaySession({
         </div>
       </header>
 
-      <div className="relative z-10 mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col px-2 pb-3">
-        <div className="mb-2 flex items-center justify-between gap-3 px-1">
-          <p className="min-h-9 flex-1 text-sm leading-snug text-fg-muted">
+      <div ref={stageRef} className="relative z-10 mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col overflow-hidden px-2 pb-2">
+        <div className="mb-1 flex shrink-0 items-center justify-between gap-3 px-1">
+          <p className="min-w-0 flex-1 truncate text-xs leading-snug text-fg-muted sm:text-sm">
             {toast || level.briefing}
           </p>
           <div className="flex items-center gap-2">
             <span className="hidden text-[11px] uppercase tracking-wider text-fg-subtle sm:inline">
               {placed}/{remain}
             </span>
-            <div className="rounded-full border border-border bg-surface px-3 py-1 font-display text-lg tabular-nums tracking-tight">
+            <div className="glass-chip rounded-full px-3 py-0.5 font-display text-base tabular-nums tracking-tight sm:text-lg">
               {score}
             </div>
           </div>
         </div>
 
         <div ref={wrapRef} className="min-h-0 flex-1 overflow-hidden">
-          <div className="flex h-full items-center justify-center py-1">
+          <div className="flex h-full items-center justify-center">
           <div
             style={{
               width: innerW * scale,
@@ -826,25 +1228,27 @@ export function PlaySession({
                   const c = i % grid;
                   const key = cellKey(r, c);
                   const isBlocked = blocked.has(key);
+                  const showStop = isBlocked;
                   const occ = occupiedAt(placements, r, c);
                   const card = occ ? cardsById.get(occ) : undefined;
                   const isTarget = targetKeys.has(key);
-                  const isSlotSel =
-                    !!selectedSlot && selectedSlot.r === r && selectedSlot.c === c;
-                  const isCardSel = !!card && selectedCard === card.id;
-                  const isHover =
-                    !!hoverCell &&
-                    hoverCell.r === r &&
-                    hoverCell.c === c &&
+                  const canSwapHere = !!card && !card.fixed && !!drag && drag.id !== card.id;
+                  const droppable =
                     !isBlocked &&
-                    (!occ || occ === drag?.id);
+                    (canSwapHere || ((!occ || occ === drag?.id) && (!goldOnly || isTarget)));
+                  const isSlotSel = !!selectedSlot && selectedSlot.r === r && selectedSlot.c === c;
+                  const isCardSel = !!card && selectedCard === card.id;
+                  const isSwapHover = !!card && hoverSwapId === card.id;
+                  const isHover =
+                    !!hoverCell && hoverCell.r === r && hoverCell.c === c && droppable && !card;
                   const isHi = highlighted.has(key) && occ !== drag?.id;
+                  const teachOk = teachOutline.get(key);
                   return (
                     <div
                       key={key}
-                      data-cell={isBlocked ? undefined : "1"}
-                      data-r={isBlocked ? undefined : r}
-                      data-c={isBlocked ? undefined : c}
+                      data-cell={droppable ? "1" : undefined}
+                      data-r={droppable ? r : undefined}
+                      data-c={droppable ? c : undefined}
                       className={cn(
                         "relative rounded-[3px]",
                         isBlocked
@@ -852,12 +1256,11 @@ export function PlaySession({
                           : "border border-cell-line bg-cell",
                         isTarget && !card && "slot-mark",
                         isSlotSel && "ring-2 ring-gold",
-                        isHi && "bg-cell ring-2 ring-cream/70",
                         isHover && "bg-ok/25 ring-1 ring-ok",
-                        !isBlocked && !card && "cursor-pointer",
+                        droppable && !card && "cursor-pointer",
                       )}
                       onPointerUp={
-                        !isBlocked && !card
+                        droppable && !card
                           ? (ev) => {
                               if (drag || pendingRef.current) return;
                               if (ev.button !== 0 && ev.pointerType === "mouse") return;
@@ -866,8 +1269,17 @@ export function PlaySession({
                           : undefined
                       }
                     >
-                      {isBlocked ? (
-                        <span className="absolute inset-[28%] rotate-45 rounded-[1px] bg-cream/25" />
+                      {showStop ? (
+                        <span
+                          data-fly-stop="1"
+                          data-stop-key={key}
+                          className={cn(
+                            "pointer-events-none absolute inset-0 grid place-items-center",
+                            awaitingDeal && "invisible",
+                          )}
+                        >
+                          <StopSign className="h-[70%] w-[70%] drop-shadow-[0_1px_1px_rgba(0,0,0,0.45)]" />
+                        </span>
                       ) : null}
                       {card ? (
                         <button
@@ -876,9 +1288,18 @@ export function PlaySession({
                           data-on-board="1"
                           data-card-id={card.id}
                           className={cn(
-                            "absolute inset-[1px] touch-none",
+                            "absolute inset-[1px] touch-none rounded-[4px]",
+                            awaitingDeal && "invisible",
                             drag?.id === card.id && "invisible",
                             isCardSel && "ring-2 ring-gold ring-offset-1 ring-offset-felt",
+                            isSwapHover && "ring-2 ring-ok ring-offset-1 ring-offset-felt",
+                            !isCardSel &&
+                              !isSwapHover &&
+                              isHi &&
+                              teachOk === undefined &&
+                              "ring-2 ring-cream/70",
+                            !isCardSel && !isSwapHover && teachOk === true && "teach-outline-ok",
+                            !isCardSel && !isSwapHover && teachOk === false && "teach-outline-bad",
                           )}
                           style={{ cursor: card.fixed ? "default" : "grab" }}
                           onPointerDown={(ev) => onPointerDown(ev, card)}
@@ -890,6 +1311,42 @@ export function PlaySession({
                           <CardFace card={card} dimmed={card.fixed} style={cardStyle} />
                         </button>
                       ) : null}
+                      {(teachByCell.get(key) ?? []).map((mark) => {
+                        const side =
+                          mark.axis === "row"
+                            ? mark.hang === "start"
+                              ? "left-0 top-1/2 -translate-x-[60%] -translate-y-1/2"
+                              : "right-0 top-1/2 translate-x-[60%] -translate-y-1/2"
+                            : mark.hang === "start"
+                              ? "left-1/2 top-0 -translate-x-1/2 -translate-y-[60%]"
+                              : "left-1/2 bottom-0 -translate-x-1/2 translate-y-[60%]";
+                        return (
+                          <span
+                            key={`${mark.axis}-${mark.ok ? "ok" : "no"}-${mark.hang}`}
+                            data-teach-mark="1"
+                            aria-label={mark.ok ? "Correct combination" : "Incorrect combination"}
+                            className={cn(
+                              "teach-mark pointer-events-none absolute z-20",
+                              awaitingDeal && "invisible",
+                              mark.ok ? "text-[#4ad66a]" : "text-pip-red",
+                              side,
+                            )}
+                            style={{ animationDelay: mark.ok ? "0s" : "0.35s" }}
+                          >
+                            {mark.ok ? (
+                              <Check
+                                className="size-[44px] drop-shadow-[0_1px_2px_rgba(0,0,0,0.85)]"
+                                strokeWidth={3.25}
+                              />
+                            ) : (
+                              <X
+                                className="size-[44px] drop-shadow-[0_1px_2px_rgba(0,0,0,0.85)]"
+                                strokeWidth={3.25}
+                              />
+                            )}
+                          </span>
+                        );
+                      })}
                     </div>
                   );
                 })}
@@ -903,11 +1360,22 @@ export function PlaySession({
         <div
           ref={trayRef}
           data-tray="1"
-          className="mt-2 shrink-0 rounded-2xl border border-dashed border-gold/50 bg-bg/80 p-2 backdrop-blur-sm"
+          className="glass-chip mt-1.5 shrink-0 rounded-2xl border-dashed border-gold/50 p-1.5"
+          onPointerUp={(ev) => {
+            if (drag || pendingRef.current) return;
+            if (ev.button !== 0 && ev.pointerType === "mouse") return;
+            const t = ev.target as HTMLElement | null;
+            if (t?.closest("[data-card-id]")) return;
+            returnToHand();
+          }}
         >
-          <p className="mb-1.5 text-center text-[11px] uppercase tracking-[0.16em] text-fg-subtle">
+          <p className="mb-1 text-center text-[10px] uppercase tracking-[0.16em] text-fg-subtle">
             Hand · {trayCards.length} to place
-            {selectedCard || selectedSlot ? " · tap a seat or a card" : ""}
+            {selectedCard && placements[selectedCard] !== "tray"
+              ? " · tap the tray to return"
+              : selectedCard || selectedSlot
+                ? " · tap a card to swap or a seat to place"
+                : ""}
           </p>
           <div className="flex flex-wrap justify-center gap-1.5">
             {trayCards.map((card) => (
@@ -917,11 +1385,13 @@ export function PlaySession({
                 data-fly-card="1"
                 data-card-id={card.id}
                 className={cn(
-                  "h-[48px] w-[34px] touch-none",
+                  "h-[42px] w-[30px] shrink-0 touch-none",
+                  awaitingDeal && "invisible",
                   drag?.id === card.id && "invisible",
                   selectedCard === card.id && "ring-2 ring-gold ring-offset-1 ring-offset-bg",
+                  hoverSwapId === card.id && "ring-2 ring-ok ring-offset-1 ring-offset-bg",
                 )}
-                style={{ cursor: "grab", fontSize: 11 }}
+                style={{ cursor: "grab", fontSize: 10 }}
                 onPointerDown={(ev) => onPointerDown(ev, card)}
                 onPointerMove={onPointerMove}
                 onPointerUp={onPointerUp}
@@ -931,12 +1401,12 @@ export function PlaySession({
               </button>
             ))}
             {trayCards.length === 0 ? (
-              <p className="py-3 text-sm text-fg-subtle">All cards are on the table</p>
+              <p className="py-2 text-sm text-fg-subtle">All cards are on the table</p>
             ) : null}
           </div>
         </div>
 
-        <div className="mt-3 flex flex-wrap justify-center gap-2">
+        <div className="mt-2 flex shrink-0 flex-wrap justify-center gap-2">
           <Button variant="secondary" size="sm" onClick={undo} disabled={!history.length}>
             <Undo2 className="size-4" />
             Undo
@@ -950,20 +1420,22 @@ export function PlaySession({
 
       {drag && dragCard ? (
         <div
-          className="pointer-events-none fixed z-50 h-[48px] w-[34px] rotate-[4deg]"
+          className="pointer-events-none fixed z-50 rotate-[4deg]"
           style={{
             left: drag.x - drag.grabX,
             top: drag.y - drag.grabY,
-            fontSize: 11,
+            width: CELL_W * scale,
+            height: CELL_H * scale,
+            fontSize: Math.max(8, 11 * scale),
           }}
         >
-          <CardFace card={dragCard} tray style={cardStyle} />
+          <CardFace card={dragCard} tray style={cardStyle} className="bg-gold" />
         </div>
       ) : null}
 
       {showWinUi ? (
-        <div ref={winOverlayRef} className="fixed inset-0 z-40 grid place-items-center bg-bg/70 p-4">
-          <div ref={winBoxRef} className="w-full max-w-sm rounded-[28px] border border-border bg-surface p-6 text-center">
+        <div ref={winOverlayRef} className="glass-scrim fixed inset-0 z-40 grid place-items-center p-4">
+          <div ref={winBoxRef} className="glass w-full max-w-sm rounded-[28px] p-6 text-center">
             <div className="mx-auto mb-3 grid size-12 place-items-center rounded-full bg-ok/20 text-ok">
               <Check className="size-6" />
             </div>
@@ -981,6 +1453,10 @@ export function PlaySession({
                   <Link to="/">Back to lobby</Link>
                 </Button>
               )}
+              <Button variant="secondary" onClick={() => setShareOpen(true)}>
+                <Share2 className="size-4" />
+                Share table
+              </Button>
               <Button variant="secondary" onClick={reset}>
                 Replay
               </Button>
@@ -995,6 +1471,15 @@ export function PlaySession({
       ) : null}
 
       <SettingsSheet open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      {level ? (
+        <ShareSheet
+          open={shareOpen}
+          onClose={() => setShareOpen(false)}
+          url={levelShareUrl(level)}
+          title="Share this table"
+          blurb="Scan the code or copy the link. Gold seats stay unique."
+        />
+      ) : null}
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { applyAudioPrefs, attachUiSounds } from "@/lib/game/audio";
+import { applyAudioPrefs, attachUiSounds, warmAudio } from "@/lib/game/audio";
 import { useSettings } from "@/lib/game/settings";
 
 export function SettingsSync() {
@@ -17,6 +17,7 @@ export function SettingsSync() {
 
   useEffect(() => {
     attachUiSounds();
+    warmAudio();
   }, []);
 
   return null;
