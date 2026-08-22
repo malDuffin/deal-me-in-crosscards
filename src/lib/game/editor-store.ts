@@ -1,5 +1,5 @@
 import type { Level } from "./types";
-import { isWellFormedLevel } from "./share";
+import { isValidLevel } from "./endless";
 
 const KEY = "crosscards-editor-v1";
 const MAX = 40;
@@ -17,7 +17,7 @@ function read(): SavedTable[] {
     if (!raw) return [];
     const parsed = JSON.parse(raw) as SavedTable[];
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter((row) => row?.level && isWellFormedLevel(row.level));
+    return parsed.filter((row) => row?.level && isValidLevel(row.level));
   } catch {
     return [];
   }

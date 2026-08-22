@@ -68,6 +68,7 @@ export const DEAL_STALL: string[] = [
 ];
 
 export const DEAL_OPENERS: Record<Difficulty, string> = {
+  beginner: "Beginner table. Tiny crossword. The cards are still learning their names.",
   easy: "Easy table. Friendly cards. They still lie, just politely.",
   medium: "Medium table. Mixed company. A straight might show up wearing a hat.",
   hard: "Hard table. Crowded crossword. If you hear a full house breathing, that's normal.",

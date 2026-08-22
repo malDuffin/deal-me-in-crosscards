@@ -1072,7 +1072,10 @@ export function PlaySession({
   };
 
   const scatterThen = async (after: () => void) => {
-    const nodes = [...document.querySelectorAll<HTMLElement>("[data-fly-card]")];
+    const nodes = [
+      ...document.querySelectorAll<HTMLElement>("[data-fly-card]"),
+      ...document.querySelectorAll<HTMLElement>("[data-fly-stop]"),
+    ];
     playWhoosh();
     setShowWinUi(false);
     await Promise.race([

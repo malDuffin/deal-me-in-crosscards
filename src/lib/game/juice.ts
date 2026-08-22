@@ -75,7 +75,7 @@ type FlyOrigin = "bottom" | "top" | "left" | "right" | "random";
 
 function originDelta(rect: DOMRect, origin: FlyOrigin) {
   const pad = 96;
-  let side: Exclude<FlyOrigin, "random"> = origin === "random"
+  const side: Exclude<FlyOrigin, "random"> = origin === "random"
     ? (["top", "left", "right", "bottom"] as const)[Math.floor(Math.random() * 4)]
     : origin;
   let x = 0;
