@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { CardStyle } from "./types";
+import { BOARD_SIZE, BOARD_SIZE_MAX, BOARD_SIZE_MIN, type CardStyle } from "./types";
 
 const KEY = "crosscards-settings-v1";
 
@@ -16,6 +16,9 @@ type SettingsData = {
   boardShadows: boolean;
   shadowDistance: number;
   shadowOpacity: number;
+  endlessCols: number;
+  endlessRows: number;
+  endlessSizeLinked: boolean;
 };
 
 type Settings = SettingsData & {
@@ -26,6 +29,9 @@ type Settings = SettingsData & {
   setBoardShadows: (v: boolean) => void;
   setShadowDistance: (v: number) => void;
   setShadowOpacity: (v: number) => void;
+  setEndlessCols: (v: number) => void;
+  setEndlessRows: (v: number) => void;
+  setEndlessSizeLinked: (v: boolean) => void;
 };
 
 const DEFAULTS: SettingsData = {
@@ -36,6 +42,9 @@ const DEFAULTS: SettingsData = {
   boardShadows: false,
   shadowDistance: 4,
   shadowOpacity: 0.4,
+  endlessCols: BOARD_SIZE,
+  endlessRows: BOARD_SIZE,
+  endlessSizeLinked: true,
 };
 
 function clamp(n: number, lo: number, hi: number, fallback: number) {
@@ -69,6 +78,9 @@ function load(): SettingsData {
         SHADOW_OPACITY_MAX,
         DEFAULTS.shadowOpacity,
       ),
+      endlessCols: clamp(Number(p.endlessCols), BOARD_SIZE_MIN, BOARD_SIZE_MAX, DEFAULTS.endlessCols),
+      endlessRows: clamp(Number(p.endlessRows), BOARD_SIZE_MIN, BOARD_SIZE_MAX, DEFAULTS.endlessRows),
+      endlessSizeLinked: p.endlessSizeLinked !== false,
     };
   } catch {
     return { ...DEFAULTS };
@@ -85,6 +97,9 @@ function persist(s: Settings) {
     boardShadows: s.boardShadows,
     shadowDistance: s.shadowDistance,
     shadowOpacity: s.shadowOpacity,
+    endlessCols: s.endlessCols,
+    endlessRows: s.endlessRows,
+    endlessSizeLinked: s.endlessSizeLinked,
   };
   window.localStorage.setItem(KEY, JSON.stringify(data));
 }
@@ -143,6 +158,27 @@ export const useSettings = create<Settings>((set, get) => ({
         DEFAULTS.shadowOpacity,
       ),
     });
+    persist(get());
+  },
+  setEndlessCols: (n) => {
+    const endlessCols = clamp(n, BOARD_SIZE_MIN, BOARD_SIZE_MAX, DEFAULTS.endlessCols);
+    const linked = get().endlessSizeLinked;
+    set(linked ? { endlessCols, endlessRows: endlessCols } : { endlessCols });
+    persist(get());
+  },
+  setEndlessRows: (n) => {
+    const endlessRows = clamp(n, BOARD_SIZE_MIN, BOARD_SIZE_MAX, DEFAULTS.endlessRows);
+    const linked = get().endlessSizeLinked;
+    set(linked ? { endlessRows, endlessCols: endlessRows } : { endlessRows });
+    persist(get());
+  },
+  setEndlessSizeLinked: (endlessSizeLinked) => {
+    if (endlessSizeLinked) {
+      const size = get().endlessCols;
+      set({ endlessSizeLinked: true, endlessRows: size });
+    } else {
+      set({ endlessSizeLinked: false });
+    }
     persist(get());
   },
 }));

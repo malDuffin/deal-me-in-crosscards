@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import { AuthProvider } from "@/lib/auth/provider";
 import { PreviewHostBridge } from "@/components/preview-host-bridge";
 import { SettingsSync } from "@/components/game/SettingsSync";
+import { CardPoolWarmup } from "@/components/game/CardPoolWarmup";
 import { GA_MEASUREMENT_ID, GoogleAnalytics } from "@/components/GoogleAnalytics";
 import appCss from "../styles.css?url";
 
@@ -81,6 +82,7 @@ gtag('config', '${GA_MEASUREMENT_ID}', { send_page_view: false });`,
         <ViewportLock />
         <PreviewHostBridge />
         <SettingsSync />
+        <CardPoolWarmup />
         <GoogleAnalytics />
         <AuthProvider>
           <Outlet />

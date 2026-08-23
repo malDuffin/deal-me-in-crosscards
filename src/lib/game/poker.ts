@@ -144,15 +144,18 @@ export function evaluateRun(cards: Card[]): { name: HandName; score: number } | 
 }
 
 function collectRuns(
-  grid: number,
+  rows: number,
+  cols: number,
   blocked: Set<string>,
   occupier: (r: number, c: number) => Card | null,
   axis: "row" | "col",
 ): { cards: Card[]; cells: Cell[]; axis: "row" | "col"; index: number }[] {
   const runs: { cards: Card[]; cells: Cell[]; axis: "row" | "col"; index: number }[] =
     [];
+  const outer = axis === "row" ? rows : cols;
+  const inner = axis === "row" ? cols : rows;
 
-  for (let i = 0; i < grid; i++) {
+  for (let i = 0; i < outer; i++) {
     let currentCards: Card[] = [];
     let currentCells: Cell[] = [];
     const flushRun = () => {
@@ -168,7 +171,7 @@ function collectRuns(
       currentCells = [];
     };
 
-    for (let j = 0; j < grid; j++) {
+    for (let j = 0; j < inner; j++) {
       const r = axis === "row" ? i : j;
       const c = axis === "row" ? j : i;
       const key = `${r},${c}`;
@@ -190,10 +193,11 @@ function collectRuns(
 }
 
 export function scanBoard(
-  grid: number,
+  cols: number,
   blocked: Set<string>,
   placements: Placement,
   cardsById: Map<string, Card>,
+  rows = cols,
 ): DetectedHand[] {
   const cellToCard = new Map<string, Card>();
   for (const [id, pos] of Object.entries(placements)) {
@@ -205,8 +209,8 @@ export function scanBoard(
 
   const occupier = (r: number, c: number) => cellToCard.get(`${r},${c}`) ?? null;
   const runs = [
-    ...collectRuns(grid, blocked, occupier, "row"),
-    ...collectRuns(grid, blocked, occupier, "col"),
+    ...collectRuns(rows, cols, blocked, occupier, "row"),
+    ...collectRuns(rows, cols, blocked, occupier, "col"),
   ];
 
   const detected: DetectedHand[] = [];
@@ -235,18 +239,21 @@ export function cellKey(r: number, c: number): string {
 
 /** Consecutive occupied stretches of 2+ cells, used for How-to example labels. */
 export function collectOccupiedRuns(
-  grid: number,
+  cols: number,
   occupied: Set<string>,
+  rows = cols,
 ): { cells: Cell[]; axis: "row" | "col" }[] {
   const out: { cells: Cell[]; axis: "row" | "col" }[] = [];
   for (const axis of ["row", "col"] as const) {
-    for (let i = 0; i < grid; i++) {
+    const outer = axis === "row" ? rows : cols;
+    const inner = axis === "row" ? cols : rows;
+    for (let i = 0; i < outer; i++) {
       let cells: Cell[] = [];
       const flush = () => {
         if (cells.length >= 2) out.push({ cells, axis });
         cells = [];
       };
-      for (let j = 0; j < grid; j++) {
+      for (let j = 0; j < inner; j++) {
         const r = axis === "row" ? i : j;
         const c = axis === "row" ? j : i;
         if (occupied.has(`${r},${c}`)) cells.push({ r, c });

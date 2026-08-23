@@ -11,6 +11,7 @@ import {
 } from "react";
 import gsap from "gsap";
 import { makeCard } from "@/lib/game/deck";
+import { lessonFor } from "@/lib/game/hand-lessons";
 import { makeProceduralLevel, neededStops, type GenProgress } from "@/lib/game/endless";
 import { findLevel, nextLevel } from "@/lib/game/levels";
 import { getTable } from "@/lib/game/editor-store";
@@ -25,7 +26,7 @@ import {
   playWin,
   unlockAudio,
 } from "@/lib/game/audio";
-import { boardDealIn, cardSwapFly, dealIn, flyInFromOffscreen, flyOutStopRects, placePop, rejectFlyHome, scatterElements, selectPulse, teachMarkIn, trayReorg } from "@/lib/game/juice";
+import { boardDealIn, cardSwapFly, celebrateWiggle, dealIn, flyInFromOffscreen, flyOutStopRects, placePop, prefersReducedMotion, rejectFlyHome, resetTrayFlip, scatterElements, selectPulse, snapshotTrayFlip, stopCelebrate, teachMarkIn, trayReorg } from "@/lib/game/juice";
 import { WaitOverlay } from "@/components/game/WaitOverlay";
 import { cellKey, collectOccupiedRuns, scanBoard, totalScore } from "@/lib/game/poker";
 import { recordScore } from "@/lib/game/progress";
@@ -37,6 +38,8 @@ import {
   CELL_H,
   CELL_W,
   DIFFICULTY_LABEL,
+  boardCols,
+  boardRows,
   type Campaign,
   type Card,
   type Cell,
@@ -50,7 +53,8 @@ import {
 import { saveHighScore } from "@/lib/scores";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { CardFace } from "./CardFace";
+import { HowToLesson } from "./HowToLesson";
+import { PooledCardFace } from "./PooledCardFace";
 import { SettingsSheet } from "./SettingsSheet";
 import { ShareSheet } from "./ShareSheet";
 import { StopSign } from "./StopSign";
@@ -102,16 +106,15 @@ function setupLevel(level: Level) {
   const cards: Card[] = [];
   const placements: Placement = {};
   const targets: Record<string, Cell> = {};
-  let i = 0;
   for (const f of level.fixed ?? []) {
-    const card = makeCard(f.rank, f.suit, i++, true);
+    const card = makeCard(f.rank, f.suit, 0, true);
     cards.push(card);
     placements[card.id] = { r: f.r, c: f.c };
   }
   const targetList = level.targets ?? [];
   const used = new Set<number>();
   for (const h of level.hand) {
-    const card = makeCard(h.rank, h.suit, i++, false);
+    const card = makeCard(h.rank, h.suit, 0, false);
     cards.push(card);
     placements[card.id] = "tray";
     const ti = targetList.findIndex(
@@ -357,6 +360,181 @@ function GuideArrows({
   );
 }
 
+const HAND_SKIN = "#fff4e8";
+const HAND_LINE = "#1a1712";
+const HAND_NAIL = "#f4c4b4";
+const POINT_D =
+  "M30 20.145s.094-2.362-1.791-3.068c-1.667-.625-2.309.622-2.309.622s.059-1.913-1.941-2.622c-1.885-.667-2.75.959-2.75.959s-.307-1.872-2.292-2.417C17.246 13.159 16 14.785 16 14.785V2.576C16 1.618 15.458.001 13.458 0S11 1.66 11 2.576v20.5c0 1-1 1-1 0V20.41c0-3.792-2.037-6.142-2.75-6.792-.713-.65-1.667-.98-2.82-.734-1.956.416-1.529 1.92-.974 3.197 1.336 3.078 2.253 7.464 2.533 9.538.79 5.858 5.808 10.375 11.883 10.381 6.626.004 12.123-5.298 12.128-11.924v-3.931z";
+const THUMB_D =
+  "M34.956 17.916c0-.503-.12-.975-.321-1.404-1.341-4.326-7.619-4.01-16.549-4.221-1.493-.035-.639-1.798-.115-5.668.341-2.517-1.282-6.382-4.01-6.382-4.498 0-.171 3.548-4.148 12.322-2.125 4.688-6.875 2.062-6.875 6.771v10.719c0 1.833.18 3.595 2.758 3.885C8.195 34.219 7.633 36 11.238 36h18.044c1.838 0 3.333-1.496 3.333-3.334 0-.762-.267-1.456-.698-2.018 1.02-.571 1.72-1.649 1.72-2.899 0-.76-.266-1.454-.696-2.015 1.023-.57 1.725-1.649 1.725-2.901 0-.909-.368-1.733-.961-2.336.757-.611 1.251-1.535 1.251-2.581z";
+const THUMB_FINGERS_D =
+  "M23.02 21.249h8.604c1.17 0 2.268-.626 2.866-1.633.246-.415.109-.952-.307-1.199-.415-.247-.952-.108-1.199.307-.283.479-.806.775-1.361.775h-8.81c-.873 0-1.583-.71-1.583-1.583s.71-1.583 1.583-1.583H28.7c.483 0 .875-.392.875-.875s-.392-.875-.875-.875h-5.888c-1.838 0-3.333 1.495-3.333 3.333 0 1.025.475 1.932 1.205 2.544-.615.605-.998 1.445-.998 2.373 0 1.028.478 1.938 1.212 2.549-.611.604-.99 1.441-.99 2.367 0 1.12.559 2.108 1.409 2.713-.524.589-.852 1.356-.852 2.204 0 1.838 1.495 3.333 3.333 3.333h5.484c1.17 0 2.269-.625 2.867-1.632.247-.415.11-.952-.305-1.199-.416-.245-.953-.11-1.199.305-.285.479-.808.776-1.363.776h-5.484c-.873 0-1.583-.71-1.583-1.583s.71-1.583 1.583-1.583h6.506c1.17 0 2.27-.626 2.867-1.633.247-.416.11-.953-.305-1.199-.419-.251-.954-.11-1.199.305-.289.487-.799.777-1.363.777h-7.063c-.873 0-1.583-.711-1.583-1.584s.71-1.583 1.583-1.583h8.091c1.17 0 2.269-.625 2.867-1.632.247-.415.11-.952-.305-1.199-.417-.246-.953-.11-1.199.305-.289.486-.799.776-1.363.776H23.02c-.873 0-1.583-.71-1.583-1.583s.709-1.584 1.583-1.584z";
+
+function GuideHandArt({ pose }: { pose: "point" | "tap" | "up" }) {
+  return (
+    <svg viewBox="0 0 42 52" width="118" height="146" className="guide-hand-svg">
+      <g className="gh-pose" opacity={pose === "point" || pose === "tap" ? 1 : 0}>
+        <ellipse cx="21" cy="49" rx="10" ry="2.4" fill="#000" opacity="0.22" />
+        <path
+          d="M11 36.2 C10.4 34.6 12.2 33.4 14.6 33.4 H27.6 C31.2 33.4 32.8 35.2 32.6 37.4 C32.4 40.2 29.8 42.2 26.4 42.2 H14.2 C11.2 42.2 10.4 39.4 11 36.2Z"
+          fill="#3b82f6"
+          stroke={HAND_LINE}
+          strokeWidth="1.35"
+          strokeLinejoin="round"
+        />
+        <path d="M14.2 38.2 H27.4" fill="none" stroke="#93c5fd" strokeWidth="1.1" strokeLinecap="round" />
+        <g transform={pose === "tap" ? "translate(3.2,2.4) scale(0.96)" : "translate(3.2,0.2) scale(0.96)"}>
+          <path fill={HAND_SKIN} stroke={HAND_LINE} strokeWidth="1.35" strokeLinejoin="round" d={POINT_D} />
+          {pose !== "tap" && (
+            <path d="M12.3 4.2 L12.3 13.5" fill="none" stroke="#fff" strokeWidth="1.6" strokeLinecap="round" opacity="0.45" />
+          )}
+          <ellipse cx="13.5" cy="2.6" rx="2.1" ry="1.7" fill={HAND_NAIL} />
+        </g>
+        {pose === "tap" ? (
+          <g>
+            <circle cx="16.2" cy="4.2" r="3.2" fill="none" stroke="#e8c547" strokeWidth="1.15" />
+            <circle cx="16.2" cy="4.2" r="5.4" fill="none" stroke="#e8c547" strokeWidth="0.7" opacity="0.5" />
+          </g>
+        ) : null}
+      </g>
+      <g className="gh-pose" opacity={pose === "up" ? 1 : 0}>
+        <ellipse cx="22" cy="49" rx="11" ry="2.4" fill="#000" opacity="0.22" />
+        <path
+          d="M12 37.2 C11.4 35.6 13.2 34.4 15.6 34.4 H29.4 C33 34.4 34.4 36.2 34.2 38.4 C34 41.2 31.4 43.2 27.8 43.2 H15.2 C12.2 43.2 11.4 40.4 12 37.2Z"
+          fill="#3b82f6"
+          stroke={HAND_LINE}
+          strokeWidth="1.35"
+          strokeLinejoin="round"
+        />
+        <path d="M15.4 39.2 H29" fill="none" stroke="#93c5fd" strokeWidth="1.1" strokeLinecap="round" />
+        <g transform="translate(2.2,1) scale(0.92)">
+          <path fill={HAND_SKIN} stroke={HAND_LINE} strokeWidth="1.4" strokeLinejoin="round" d={THUMB_D} />
+          <path fill="#edd0a8" opacity="0.95" d={THUMB_FINGERS_D} />
+          <ellipse cx="12.2" cy="6.2" rx="2.4" ry="2" fill={HAND_NAIL} />
+        </g>
+        <path
+          d="M34 6 L35.1 9.2 L38.4 9.6 L35.1 10 L34 13.2 L32.9 10 L29.6 9.6 L32.9 9.2 Z"
+          fill="#e8c547"
+          stroke={HAND_LINE}
+          strokeWidth="0.7"
+          strokeLinejoin="round"
+        />
+      </g>
+    </svg>
+  );
+}
+
+function GuideHand({
+  active,
+  cardId,
+  target,
+}: {
+  active: boolean;
+  cardId: string | null;
+  target: Cell | null;
+}) {
+  const handRef = useRef<HTMLDivElement>(null);
+  const [pose, setPose] = useState<"point" | "tap" | "up">("point");
+  const poseRef = useRef(setPose);
+  poseRef.current = setPose;
+
+  useLayoutEffect(() => {
+    const el = handRef.current;
+    if (!el) return;
+    if (!active || !cardId || !target || prefersReducedMotion()) {
+      gsap.killTweensOf(el);
+      gsap.set(el, { autoAlpha: 0 });
+      poseRef.current("point");
+      return;
+    }
+    let killed = false;
+    let tl: ReturnType<typeof gsap.timeline> | null = null;
+    let raf = 0;
+    const fingerOffset = (kind: "point" | "up") => {
+      const w = el.offsetWidth || 118;
+      const h = el.offsetHeight || 146;
+      if (kind === "up") return { ox: w * 0.52, oy: h * 0.1 };
+      return { ox: w * 0.385, oy: h * 0.04 };
+    };
+    const measure = () => {
+      const fromEl = document.querySelector<HTMLElement>(`[data-tray] [data-card-id="${cardId}"]`);
+      const toEl = document.querySelector<HTMLElement>(`[data-r="${target.r}"][data-c="${target.c}"]`);
+      if (!fromEl || !toEl) return null;
+      const a = fromEl.getBoundingClientRect();
+      const b = toEl.getBoundingClientRect();
+      if (a.width < 2 || b.width < 2) return null;
+      return {
+        x1: a.left + a.width / 2,
+        y1: a.top + a.height * 0.22,
+        x2: b.left + b.width / 2,
+        y2: b.top + b.height * 0.22,
+      };
+    };
+    const run = () => {
+      if (killed) return;
+      const pts = measure();
+      if (!pts) {
+        raf = window.requestAnimationFrame(run);
+        return;
+      }
+      gsap.killTweensOf(el);
+      const p = fingerOffset("point");
+      const u = fingerOffset("up");
+      poseRef.current("point");
+      gsap.set(el, { left: pts.x1 - p.ox, top: pts.y1 - p.oy, autoAlpha: 0, scale: 0.86, rotate: -8 });
+      tl = gsap.timeline({
+        repeat: -1,
+        repeatDelay: 0.4,
+        defaults: { ease: "power2.inOut" },
+        onRepeat: () => poseRef.current("point"),
+      });
+      tl.to(el, { autoAlpha: 1, scale: 1, duration: 0.28, ease: "back.out(1.7)" });
+      tl.add(() => {
+        if (!killed) poseRef.current("tap");
+      });
+      tl.to(el, { scale: 0.92, top: pts.y1 - p.oy + 10, duration: 0.12, ease: "power2.in" });
+      tl.to(el, { scale: 1, top: pts.y1 - p.oy, duration: 0.14, ease: "power2.out" });
+      tl.add(() => {
+        if (!killed) poseRef.current("point");
+      });
+      tl.to({}, { duration: 0.16 });
+      tl.to(el, { left: pts.x2 - p.ox, top: pts.y2 - p.oy, rotate: 6, duration: 0.85, ease: "power2.inOut" });
+      tl.add(() => {
+        if (!killed) poseRef.current("tap");
+      });
+      tl.to(el, { scale: 0.92, top: pts.y2 - p.oy + 10, duration: 0.12, ease: "power2.in" });
+      tl.to(el, { scale: 1, top: pts.y2 - p.oy, duration: 0.14, ease: "power2.out" });
+      tl.add(() => {
+        if (!killed) poseRef.current("up");
+      });
+      tl.to(el, { left: pts.x2 - u.ox + 22, top: pts.y2 - u.oy + 8, rotate: -4, scale: 1.08, duration: 0.32, ease: "back.out(2)" });
+      tl.to({}, { duration: 0.7 });
+      tl.to(el, { autoAlpha: 0, scale: 0.9, duration: 0.22 });
+    };
+    raf = window.requestAnimationFrame(run);
+    const onResize = () => {
+      if (tl) tl.kill();
+      gsap.killTweensOf(el);
+      run();
+    };
+    window.addEventListener("resize", onResize);
+    return () => {
+      killed = true;
+      window.cancelAnimationFrame(raf);
+      window.removeEventListener("resize", onResize);
+      if (tl) tl.kill();
+      gsap.killTweensOf(el);
+    };
+  }, [active, cardId, target?.r, target?.c]);
+
+  if (!active || !cardId || !target) return null;
+  return (
+    <div ref={handRef} className="guide-hand pointer-events-none fixed z-[46]" aria-hidden="true" style={{ left: 0, top: 0, opacity: 0 }}>
+      <GuideHandArt pose={pose} />
+    </div>
+  );
+}
+
 export function PlaySession({
   campaign,
   levelId,
@@ -385,13 +563,21 @@ export function PlaySession({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const cardStyle = useSettings((s) => s.cardStyle);
+  const endlessCols = useSettings((s) => s.endlessCols);
+  const endlessRows = useSettings((s) => s.endlessRows);
   const muted = useSettings((s) => s.muted);
   const setMuted = useSettings((s) => s.setMuted);
   const boardShadows = useSettings((s) => s.boardShadows);
   const shadowDistance = useSettings((s) => s.shadowDistance);
   const shadowOpacity = useSettings((s) => s.shadowOpacity);
   const placedShadow = feltDropShadow(boardShadows, shadowDistance, shadowOpacity);
-  const nextCache = useRef<{ n: number; difficulty: Difficulty; level: Level } | null>(null);
+  const nextCache = useRef<{
+    n: number;
+    difficulty: Difficulty;
+    level: Level;
+    cols: number;
+    rows: number;
+  } | null>(null);
 
   const staticLevel = useMemo(
     () => (campaign === "endless" || campaign === "custom" ? null : findLevel(campaign, levelId)),
@@ -418,6 +604,40 @@ export function PlaySession({
   const overlayWaiterRef = useRef<(() => void) | null>(null);
   const loadingUiRef = useRef(campaign === "endless");
   const genSeq = useRef(0);
+  const prefetchId = useRef(0);
+
+  const stopPrefetch = useCallback(() => {
+    prefetchId.current += 1;
+  }, []);
+
+  const startPrefetch = useCallback(
+    (n: number) => {
+      const id = ++prefetchId.current;
+      const delay = difficulty === "expert" || difficulty === "hard" ? 2200 : 800;
+      const kick = () => {
+        if (id !== prefetchId.current) return;
+        void makeProceduralLevel(difficulty, n, undefined, {
+          background: true,
+          isCancelled: () => id !== prefetchId.current,
+          cols: endlessCols,
+          rows: endlessRows,
+        })
+          .then((lvl) => {
+            if (id !== prefetchId.current) return;
+            nextCache.current = { n, difficulty, level: lvl, cols: endlessCols, rows: endlessRows };
+          })
+          .catch((err: unknown) => {
+            if (err && typeof err === "object" && "name" in err && (err as { name: string }).name === "GenCancelled") return;
+          });
+      };
+      if (typeof window.requestIdleCallback === "function") {
+        window.requestIdleCallback(kick, { timeout: delay });
+      } else {
+        window.setTimeout(kick, delay);
+      }
+    },
+    [difficulty, endlessCols, endlessRows],
+  );
 
   const markOverlayReady = useCallback(() => {
     overlayReadyRef.current = true;
@@ -443,17 +663,22 @@ export function PlaySession({
   const loadEndless = useCallback(
     async (n: number) => {
       const cached = nextCache.current;
-      const hit = !!(cached && cached.n === n && cached.difficulty === difficulty);
+      const hit = !!(
+        cached &&
+        cached.n === n &&
+        cached.difficulty === difficulty &&
+        cached.cols === endlessCols &&
+        cached.rows === endlessRows
+      );
       setTableNo(n);
+      stopPrefetch();
       if (hit && cached) {
         nextCache.current = null;
         loadingUiRef.current = false;
         setEndlessLevel(cached.level);
         setEndlessLoading(false);
         setGenProgress(null);
-        void makeProceduralLevel(difficulty, n + 1).then((lvl) => {
-          nextCache.current = { n: n + 1, difficulty, level: lvl };
-        });
+        startPrefetch(n + 1);
         return;
       }
       const seq = ++genSeq.current;
@@ -470,17 +695,23 @@ export function PlaySession({
       await waitForOverlay();
       if (seq !== genSeq.current) return;
       try {
-        const lvl = await makeProceduralLevel(difficulty, n, (p) => {
-          if (seq !== genSeq.current) return;
-          setGenProgress(p);
-        });
+        const lvl = await makeProceduralLevel(
+          difficulty,
+          n,
+          (p) => {
+            if (seq !== genSeq.current) return;
+            setGenProgress(p);
+          },
+          { isCancelled: () => seq !== genSeq.current, cols: endlessCols, rows: endlessRows },
+        );
         if (seq !== genSeq.current) return;
         loadingUiRef.current = false;
         setEndlessLevel(lvl);
         setGenProgress(null);
-        void makeProceduralLevel(difficulty, n + 1).then((next) => {
-          nextCache.current = { n: n + 1, difficulty, level: next };
-        });
+        startPrefetch(n + 1);
+      } catch (err: unknown) {
+        if (err && typeof err === "object" && "name" in err && (err as { name: string }).name === "GenCancelled") return;
+        throw err;
       } finally {
         if (seq === genSeq.current) {
           loadingUiRef.current = false;
@@ -488,16 +719,20 @@ export function PlaySession({
         }
       }
     },
-    [difficulty],
+    [difficulty, startPrefetch, stopPrefetch, endlessCols, endlessRows],
   );
 
   useEffect(() => {
     nextCache.current = null;
+    stopPrefetch();
     if (campaign !== "endless") return;
     setEndlessLevel(null);
     const t = window.setTimeout(() => loadEndless(1), 0);
-    return () => window.clearTimeout(t);
-  }, [campaign, loadEndless, difficulty]);
+    return () => {
+      window.clearTimeout(t);
+      stopPrefetch();
+    };
+  }, [campaign, loadEndless, difficulty, stopPrefetch]);
 
   const built = useMemo(
     () =>
@@ -508,7 +743,8 @@ export function PlaySession({
   );
   const cards = built.cards;
   const targets = built.targets;
-  const grid = level?.grid ?? 11;
+  const cols = level ? boardCols(level) : 11;
+  const rows = level ? boardRows(level) : 11;
   const [placements, setPlacements] = useState<Placement>(built.placements);
   const [history, setHistory] = useState<Placement[]>([]);
   const [drag, setDrag] = useState<DragState | null>(null);
@@ -518,6 +754,7 @@ export function PlaySession({
   const [selectedSlot, setSelectedSlot] = useState<Cell | null>(null);
   const [won, setWon] = useState(false);
   const [showWinUi, setShowWinUi] = useState(false);
+  const [handDismissed, setHandDismissed] = useState(false);
   const [toast, setToast] = useState(level?.briefing ?? "");
   const wrapRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -535,6 +772,7 @@ export function PlaySession({
   const swappingRef = useRef(false);
   const placementsRef = useRef<Placement>({});
   const bounceTimer = useRef<number | null>(null);
+  const winTimer = useRef<number | null>(null);
   const bounceHomeRef = useRef<(ids: string[], before: Map<string, DOMRect>) => void>(() => {});
   const [shownSig, setShownSig] = useState("");
   const [holdPlease, setHoldPlease] = useState(true);
@@ -576,13 +814,13 @@ export function PlaySession({
       if (p && p !== "tray") occupied.set(cellKey(p.r, p.c), { rank: c.rank, suit: c.suit });
     }
     const set = new Set<string>();
-    for (const s of neededStops(occupied)) {
+    for (const s of neededStops(occupied, { rows, cols })) {
       const k = cellKey(s.r, s.c);
       if (targetKeys.has(k)) continue;
       set.add(k);
     }
     return set;
-  }, [campaign, built.blocked, cards, scanPlacements, targetKeys]);
+  }, [campaign, built.blocked, cards, scanPlacements, targetKeys, rows, cols]);
 
   const prevBlockedRef = useRef<Set<string>>(new Set());
   const stopRectsRef = useRef<Map<string, DOMRect>>(new Map());
@@ -670,10 +908,17 @@ export function PlaySession({
     prevHands.current = "";
     skipTrayReorg.current = true;
     trayPrevRects.current = new Map();
+    resetTrayFlip();
     if (bounceTimer.current) {
       window.clearTimeout(bounceTimer.current);
       bounceTimer.current = null;
     }
+    if (winTimer.current) {
+      window.clearTimeout(winTimer.current);
+      winTimer.current = null;
+    }
+    stopCelebrate([...(wrapRef.current?.querySelectorAll<HTMLElement>("[data-fly-card][data-user-placed]") ?? [])]);
+    setHandDismissed(false);
   }, [built, level?.briefing]);
 
   useLayoutEffect(() => {
@@ -725,6 +970,7 @@ export function PlaySession({
         if (id) seeded.set(id, el.getBoundingClientRect());
       }
       trayPrevRects.current = seeded;
+      snapshotTrayFlip(trayEls);
       skipTrayReorg.current = false;
     });
   }, [awaitingDeal, tableSig, placements, built.placements, campaign]);
@@ -746,15 +992,15 @@ export function PlaySession({
   const cardsById = useMemo(() => new Map(cards.map((c) => [c.id, c])), [cards]);
 
   const hands = useMemo(() => {
-    const found = scanBoard(grid, blocked, scanPlacements, cardsById);
+    const found = scanBoard(cols, blocked, scanPlacements, cardsById, rows);
     if (campaign !== "howto") return found;
-    const mid = Math.floor(grid / 2);
+    const mid = Math.floor(rows / 2);
     return found.filter((h) => {
       const top = h.cells.every((p) => p.r < mid);
       const bot = h.cells.every((p) => p.r > mid);
       return !top && !bot;
     });
-  }, [grid, blocked, scanPlacements, cardsById, campaign]);
+  }, [cols, rows, blocked, scanPlacements, cardsById, campaign]);
   const score = totalScore(hands);
   const teachMarks = useMemo(() => howtoMarks(level), [level]);
   const highlighted = useMemo(() => {
@@ -769,22 +1015,55 @@ export function PlaySession({
     .sort(sortHighToLow);
   const trayOrderKey = trayCards.map((c) => c.id).join("|");
   const trayEmpty = cards.every((c) => c.fixed || placements[c.id] !== "tray");
+  const firstGuideCardId = useMemo(() => {
+    if (!level) return null;
+    const opener =
+      (campaign === "howto" && level.number === 1) ||
+      (campaign === "training" && level.number === 1) ||
+      (campaign === "puzzle" && level.id === "bg-1");
+    if (!opener) return null;
+    const h = level.hand[0];
+    if (!h) return null;
+    const card = cards.find(
+      (c) =>
+        !c.fixed &&
+        c.rank === h.rank &&
+        c.suit === h.suit &&
+        (placements[c.id] === "tray" || drag?.id === c.id),
+    );
+    return card?.id ?? null;
+  }, [level, campaign, cards, placements, drag?.id]);
+
   const guideCardIds = useMemo(() => {
-    if (campaign !== "howto" && campaign !== "training") return [];
-    const ids = trayCards.filter((c) => targets[c.id]).map((c) => c.id);
-    if (drag?.id && targets[drag.id] && !ids.includes(drag.id)) ids.push(drag.id);
-    return ids;
-  }, [campaign, trayOrderKey, targets, drag?.id]);
+    if (campaign === "howto" || campaign === "training") {
+      const ids = trayCards.filter((c) => targets[c.id]).map((c) => c.id);
+      if (drag?.id && targets[drag.id] && !ids.includes(drag.id)) ids.push(drag.id);
+      return ids;
+    }
+    if (campaign === "puzzle" && level?.id === "bg-1" && firstGuideCardId && targets[firstGuideCardId]) {
+      return [firstGuideCardId];
+    }
+    return [];
+  }, [campaign, trayOrderKey, targets, drag?.id, level?.id, firstGuideCardId]);
+
+  useEffect(() => {
+    if (!firstGuideCardId) return;
+    if (drag?.id === firstGuideCardId || selectedCard === firstGuideCardId) {
+      setHandDismissed(true);
+    }
+  }, [drag?.id, selectedCard, firstGuideCardId]);
 
   useLayoutEffect(() => {
     const els = [...(trayRef.current?.querySelectorAll("[data-fly-card]") ?? [])] as HTMLElement[];
-    if (skipTrayReorg.current) return;
+    if (skipTrayReorg.current) {
+      snapshotTrayFlip(els);
+      return;
+    }
     trayPrevRects.current = trayReorg(els, trayPrevRects.current);
   }, [trayOrderKey]);
 
   const revealWin = useCallback(() => {
     if (!pendingWin.current) return;
-    if (pendingFloats.current > 0) return;
     pendingWin.current = false;
     const nxt = campaign === "training" && level ? nextLevel(level) : null;
     if (nxt) {
@@ -792,7 +1071,6 @@ export function PlaySession({
       return;
     }
     setShowWinUi(true);
-    playWin();
   }, [campaign, level, navigate]);
 
   const spawnFloats = useCallback(
@@ -826,7 +1104,6 @@ export function PlaySession({
                 onComplete: () => {
                   el.remove();
                   pendingFloats.current--;
-                  revealWin();
                 },
               });
             },
@@ -834,8 +1111,19 @@ export function PlaySession({
         );
       });
     },
-    [revealWin],
+    [],
   );
+
+  const boardCardEls = () =>
+    [...(wrapRef.current?.querySelectorAll<HTMLElement>("[data-fly-card][data-user-placed]") ?? [])];
+
+  const cancelWinDelay = () => {
+    if (winTimer.current) {
+      window.clearTimeout(winTimer.current);
+      winTimer.current = null;
+    }
+    stopCelebrate(boardCardEls());
+  };
 
   useEffect(() => {
     const sig = hands.map(handKey).sort().join("§");
@@ -868,9 +1156,14 @@ export function PlaySession({
       recordScore(level.id, level.campaign, score);
       void saveHighScore({ data: { levelId: level.id, score } }).catch(() => {});
       pendingWin.current = true;
-      if (pendingFloats.current === 0) {
-        window.setTimeout(revealWin, 380);
-      }
+      const celebrating = campaign !== "training" || !nextLevel(level);
+      if (celebrating) playWin();
+      void celebrateWiggle(boardCardEls(), celebrating ? 3 : 1.2);
+      if (winTimer.current) window.clearTimeout(winTimer.current);
+      winTimer.current = window.setTimeout(() => {
+        winTimer.current = null;
+        revealWin();
+      }, celebrating ? 3000 : 1200);
       return;
     }
     if (level.win.exactTargets && trayEmpty && history.length > 0) {
@@ -902,7 +1195,7 @@ export function PlaySession({
     } else if (level.win.allScore && trayEmpty) {
       setToast("Every card must sit in a scoring hand.");
     }
-  }, [hands, trayEmpty, drag, score, level, won, cards, placements, targets, revealWin, history.length]);
+  }, [hands, trayEmpty, drag, score, level, won, cards, placements, targets, revealWin, history.length, campaign]);
 
   useEffect(() => {
     if (!showWinUi) return;
@@ -916,8 +1209,8 @@ export function PlaySession({
   useLayoutEffect(() => {
     const wrap = wrapRef.current;
     if (!wrap) return;
-    const boardW = grid * CELL_W + (grid - 1) * CELL_GAP + BOARD_PAD * 2 + BOARD_RAIL * 2;
-    const boardH = grid * CELL_H + (grid - 1) * CELL_GAP + BOARD_PAD * 2 + BOARD_RAIL * 2;
+    const boardW = cols * CELL_W + (cols - 1) * CELL_GAP + BOARD_PAD * 2 + BOARD_RAIL * 2;
+    const boardH = rows * CELL_H + (rows - 1) * CELL_GAP + BOARD_PAD * 2 + BOARD_RAIL * 2;
     const measure = () => {
       const availW = Math.max(1, wrap.clientWidth);
       const availH = Math.max(1, wrap.clientHeight);
@@ -928,7 +1221,7 @@ export function PlaySession({
     const ro = new ResizeObserver(measure);
     ro.observe(wrap);
     return () => ro.disconnect();
-  }, [grid, level]);
+  }, [cols, rows, level]);
 
   const commit = useCallback(
     (next: Placement, placedId?: string) => {
@@ -961,6 +1254,7 @@ export function PlaySession({
           if (id) seeded.set(id, el.getBoundingClientRect());
         }
         trayPrevRects.current = seeded;
+        snapshotTrayFlip(trayEls);
         skipTrayReorg.current = false;
       });
     });
@@ -987,6 +1281,7 @@ export function PlaySession({
           if (id) seeded.set(id, el.getBoundingClientRect());
         }
         trayPrevRects.current = seeded;
+        snapshotTrayFlip(trayEls);
         skipTrayReorg.current = false;
       });
     });
@@ -1280,6 +1575,7 @@ export function PlaySession({
   };
 
   const reset = () => {
+    cancelWinDelay();
     if (campaign === "free") {
       setDealKey((k) => k + 1);
       return;
@@ -1298,6 +1594,7 @@ export function PlaySession({
   const undo = () => {
     const prev = history[history.length - 1];
     if (!prev) return;
+    cancelWinDelay();
     setHistory((h) => h.slice(0, -1));
     setPlacements(prev);
     setWon(false);
@@ -1342,9 +1639,10 @@ export function PlaySession({
   };
 
   const nxt = level && campaign !== "endless" ? nextLevel(level) : null;
+  const howtoLesson = campaign === "howto" ? lessonFor(level?.name) : null;
   const dragCard = drag ? cardsById.get(drag.id) : null;
-  const innerW = grid * CELL_W + (grid - 1) * CELL_GAP + BOARD_PAD * 2 + BOARD_RAIL * 2;
-  const innerH = grid * CELL_H + (grid - 1) * CELL_GAP + BOARD_PAD * 2 + BOARD_RAIL * 2;
+  const innerW = cols * CELL_W + (cols - 1) * CELL_GAP + BOARD_PAD * 2 + BOARD_RAIL * 2;
+  const innerH = rows * CELL_H + (rows - 1) * CELL_GAP + BOARD_PAD * 2 + BOARD_RAIL * 2;
   const remain = cards.filter((c) => !c.fixed).length;
   const placed = remain - trayCards.length;
 
@@ -1390,15 +1688,21 @@ export function PlaySession({
       />
       <GuideArrows
         active={
-          (campaign === "howto" || campaign === "training") &&
+          (campaign === "howto" || campaign === "training" || (campaign === "puzzle" && level.id === "bg-1")) &&
           !won &&
           !awaitingDeal &&
-          !holdPlease
+          !holdPlease &&
+          guideCardIds.length > 0
         }
         cardIds={guideCardIds}
         targets={targets}
         drag={drag}
         scale={scale}
+      />
+      <GuideHand
+        active={!!firstGuideCardId && !handDismissed && !won && !awaitingDeal && !holdPlease}
+        cardId={firstGuideCardId}
+        target={firstGuideCardId ? targets[firstGuideCardId] ?? null : null}
       />
       <header className="relative z-10 flex shrink-0 items-center justify-between gap-2 px-2 py-1">
         <Link
@@ -1487,15 +1791,15 @@ export function PlaySession({
               <div
                 className="relative grid"
                 style={{
-                  gridTemplateColumns: `repeat(${grid}, ${CELL_W}px)`,
-                  gridTemplateRows: `repeat(${grid}, ${CELL_H}px)`,
+                  gridTemplateColumns: `repeat(${cols}, ${CELL_W}px)`,
+                  gridTemplateRows: `repeat(${rows}, ${CELL_H}px)`,
                   gap: CELL_GAP,
                   fontSize: 11,
                 }}
               >
-                {Array.from({ length: grid * grid }, (_, i) => {
-                  const r = Math.floor(i / grid);
-                  const c = i % grid;
+                {Array.from({ length: rows * cols }, (_, i) => {
+                  const r = Math.floor(i / cols);
+                  const c = i % cols;
                   const key = cellKey(r, c);
                   const isBlocked = blocked.has(key);
                   const showStop = isBlocked;
@@ -1539,25 +1843,25 @@ export function PlaySession({
                           : undefined
                       }
                     >
-                      {showStop ? (
-                        <span
-                          data-fly-stop="1"
-                          data-stop-key={key}
-                          data-stay-felt={stopStay(key) ? "1" : undefined}
-                          className={cn(
-                            "pointer-events-none absolute inset-0 grid place-items-center",
-                            awaitingDeal && !stopStay(key) && "invisible",
-                          )}
-                        >
-                          <StopSign className="h-[70%] w-[70%] drop-shadow-[0_1px_1px_rgba(0,0,0,0.45)]" />
-                        </span>
-                      ) : null}
+                      <span
+                        data-fly-stop={showStop ? "1" : undefined}
+                        data-stop-key={showStop ? key : undefined}
+                        data-stay-felt={stopStay(key) ? "1" : undefined}
+                        className={cn(
+                          "pointer-events-none absolute inset-0 grid place-items-center",
+                          (!showStop || (awaitingDeal && !stopStay(key))) && "invisible",
+                        )}
+                      >
+                        <StopSign className="h-[70%] w-[70%] drop-shadow-[0_1px_1px_rgba(0,0,0,0.45)]" />
+                      </span>
                       {card ? (
                         <button
                           type="button"
                           data-fly-card="1"
                           data-on-board="1"
+                          data-user-placed={card.fixed ? undefined : "1"}
                           data-card-id={card.id}
+                          data-flip-id={card.id}
                           data-stay-felt={feltStay(r, c, card.rank, card.suit) ? "1" : undefined}
                           className={cn(
                             "absolute inset-[1px] touch-none rounded-[4px]",
@@ -1578,7 +1882,12 @@ export function PlaySession({
                           disabled={card.fixed}
                         >
                           <div className="h-full w-full" style={{ filter: placedShadow }}>
-                            <CardFace card={card} dimmed={card.fixed} style={cardStyle} />
+                            <PooledCardFace
+                              card={card}
+                              dimmed={card.fixed}
+                              style={cardStyle}
+                              active={drag?.id !== card.id}
+                            />
                           </div>
                         </button>
                       ) : null}
@@ -1673,6 +1982,7 @@ export function PlaySession({
                 type="button"
                 data-fly-card="1"
                 data-card-id={card.id}
+                data-flip-id={card.id}
                 className={cn(
                   "h-[42px] w-[30px] shrink-0 touch-none",
                   awaitingDeal && "invisible",
@@ -1686,7 +1996,12 @@ export function PlaySession({
                 onPointerUp={onPointerUp}
                 onPointerCancel={onPointerUp}
               >
-                <CardFace card={card} tray style={cardStyle} />
+                <PooledCardFace
+                  card={card}
+                  tray
+                  style={cardStyle}
+                  active={drag?.id !== card.id}
+                />
               </button>
             ))}
             {trayCards.length === 0 ? (
@@ -1709,7 +2024,7 @@ export function PlaySession({
 
       {drag && dragCard ? (
         <div
-          className="pointer-events-none fixed z-50 rotate-[4deg]"
+          className="pointer-events-none fixed z-50 origin-center rotate-[4deg]"
           style={{
             left: drag.x - drag.grabX,
             top: drag.y - drag.grabY,
@@ -1719,23 +2034,31 @@ export function PlaySession({
             filter: placedShadow,
           }}
         >
-          <CardFace card={dragCard} tray style={cardStyle} className="bg-gold" />
+          <PooledCardFace card={dragCard} tray style={cardStyle} className="bg-gold" />
         </div>
       ) : null}
 
       {showWinUi ? (
         <div ref={winOverlayRef} className="glass-scrim fixed inset-0 z-40 grid place-items-center p-4">
           <div ref={winBoxRef} className="glass w-full max-w-sm rounded-[28px] p-6 text-center">
-            <div className="mx-auto mb-3 grid size-12 place-items-center rounded-full bg-ok/20 text-ok">
-              <Check className="size-6" />
-            </div>
-            <h2 className="font-display text-2xl font-semibold tracking-tight">
-              {campaign === "free" ? "Round complete" : "Table complete"}
-            </h2>
-            <p className="mt-2 text-sm text-fg-muted">Score {score}</p>
+            {howtoLesson ? (
+              <HowToLesson lesson={howtoLesson} />
+            ) : (
+              <>
+                <div className="mx-auto mb-3 grid size-12 place-items-center rounded-full bg-ok/20 text-ok">
+                  <Check className="size-6" />
+                </div>
+                <h2 className="font-display text-2xl font-semibold tracking-tight">
+                  {campaign === "free" ? "Round complete" : "Table complete"}
+                </h2>
+                <p className="mt-2 text-sm text-fg-muted">Score {score}</p>
+              </>
+            )}
             <div className="mt-5 flex flex-col gap-2">
               {campaign === "endless" || nxt ? (
-                <Button onClick={goNext}>Next table</Button>
+                <Button onClick={goNext}>
+                  {campaign === "howto" ? "Next Card Combination" : "Next table"}
+                </Button>
               ) : campaign === "free" ? (
                 <Button onClick={reset}>Deal again</Button>
               ) : (

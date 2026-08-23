@@ -20,9 +20,10 @@ function TrialBoard({ preview }: { preview: GenBoardPreview | null }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [scale, setScale] = useState(1);
   const cardStyle = useSettings((s) => s.cardStyle);
-  const n = preview?.grid ?? BOARD_SIZE;
-  const innerW = n * CELL_W + (n - 1) * CELL_GAP + BOARD_PAD * 2 + BOARD_RAIL * 2;
-  const innerH = n * CELL_H + (n - 1) * CELL_GAP + BOARD_PAD * 2 + BOARD_RAIL * 2;
+  const cols = preview?.grid ?? BOARD_SIZE;
+  const rows = preview?.rows ?? cols;
+  const innerW = cols * CELL_W + (cols - 1) * CELL_GAP + BOARD_PAD * 2 + BOARD_RAIL * 2;
+  const innerH = rows * CELL_H + (rows - 1) * CELL_GAP + BOARD_PAD * 2 + BOARD_RAIL * 2;
 
   const map = new Map<string, GenBoardPreview["cells"][number]>();
   if (preview) {
@@ -65,15 +66,15 @@ function TrialBoard({ preview }: { preview: GenBoardPreview | null }) {
               <div
                 className="grid"
                 style={{
-                  gridTemplateColumns: `repeat(${n}, ${CELL_W}px)`,
-                  gridTemplateRows: `repeat(${n}, ${CELL_H}px)`,
+                  gridTemplateColumns: `repeat(${cols}, ${CELL_W}px)`,
+                  gridTemplateRows: `repeat(${rows}, ${CELL_H}px)`,
                   gap: CELL_GAP,
                   fontSize: 11,
                 }}
               >
-                {Array.from({ length: n * n }, (_, i) => {
-                  const r = Math.floor(i / n);
-                  const c = i % n;
+                {Array.from({ length: rows * cols }, (_, i) => {
+                  const r = Math.floor(i / cols);
+                  const c = i % cols;
                   const cell = map.get(`${r},${c}`);
                   if (!cell) {
                     return (

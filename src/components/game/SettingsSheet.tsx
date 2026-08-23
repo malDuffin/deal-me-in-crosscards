@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { X } from "lucide-react";
+import { Link2, Link2Off, X } from "lucide-react";
 import gsap from "gsap";
 import { applyAudioPrefs, unlockAudio } from "@/lib/game/audio";
 import { prefersReducedMotion } from "@/lib/game/juice";
@@ -11,7 +11,7 @@ import {
   SHADOW_OPACITY_MIN,
   useSettings,
 } from "@/lib/game/settings";
-import { SUITS, type Card, type CardStyle, type Suit } from "@/lib/game/types";
+import { SUITS, BOARD_SIZE_MAX, BOARD_SIZE_MIN, type Card, type CardStyle, type Suit } from "@/lib/game/types";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { CardFace } from "./CardFace";
@@ -42,6 +42,12 @@ export function SettingsSheet({ open, onClose }: { open: boolean; onClose: () =>
     setBoardShadows,
     setShadowDistance,
     setShadowOpacity,
+    endlessCols,
+    endlessRows,
+    endlessSizeLinked,
+    setEndlessCols,
+    setEndlessRows,
+    setEndlessSizeLinked,
   } = useSettings();
 
   useEffect(() => {
@@ -149,6 +155,84 @@ export function SettingsSheet({ open, onClose }: { open: boolean; onClose: () =>
               />
             </span>
           ))}
+        </div>
+
+        <p className="mb-2 text-[11px] uppercase tracking-[0.16em] text-fg-subtle">
+          Endless board
+        </p>
+        <div className="glass-chip mb-5 rounded-2xl px-3 py-3">
+          <div className="flex items-center justify-between gap-3">
+            <span>
+              <span className="block font-medium">
+                {endlessCols}×{endlessRows}
+              </span>
+              <span className="text-xs text-fg-muted">
+                How to Play, Training and Puzzle stay 11×11
+              </span>
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                unlockAudio();
+                setEndlessSizeLinked(!endlessSizeLinked);
+              }}
+              className={cn(
+                "inline-flex size-10 items-center justify-center rounded-xl transition-transform duration-150 ease-out active:scale-[0.96]",
+                endlessSizeLinked ? "bg-gold/20 text-gold" : "bg-ink/30 text-fg-muted",
+              )}
+              aria-pressed={endlessSizeLinked}
+              aria-label={endlessSizeLinked ? "Unlock width and height" : "Lock width and height together"}
+              title={endlessSizeLinked ? "Width and height linked" : "Width and height separate"}
+            >
+              {endlessSizeLinked ? <Link2 className="size-5" /> : <Link2Off className="size-5" />}
+            </button>
+          </div>
+          <label className="mt-3 block">
+            <span className="flex items-baseline justify-between gap-3">
+              <span className="text-sm">{endlessSizeLinked ? "Size" : "Width"}</span>
+              <span className="text-xs tabular-nums text-fg-muted">{endlessCols}</span>
+            </span>
+            <input
+              type="range"
+              min={BOARD_SIZE_MIN}
+              max={BOARD_SIZE_MAX}
+              step={1}
+              value={endlessCols}
+              aria-label={endlessSizeLinked ? "Endless board size" : "Endless board width"}
+              onChange={(e) => setEndlessCols(Number(e.target.value))}
+              className="mt-1 w-full accent-gold"
+            />
+          </label>
+          <label className={cn("mt-2 block", endlessSizeLinked && "opacity-45")}>
+            <span className="flex items-baseline justify-between gap-3">
+              <span className="text-sm">Height</span>
+              <span className="text-xs tabular-nums text-fg-muted">{endlessRows}</span>
+            </span>
+            <input
+              type="range"
+              min={BOARD_SIZE_MIN}
+              max={BOARD_SIZE_MAX}
+              step={1}
+              value={endlessRows}
+              disabled={endlessSizeLinked}
+              aria-label="Endless board height"
+              onChange={(e) => setEndlessRows(Number(e.target.value))}
+              className="mt-1 w-full accent-gold"
+            />
+          </label>
+          <div className="mt-3 grid place-items-center rounded-xl bg-felt px-3 py-3">
+            <div
+              className="rounded-[3px] border border-board-rim bg-cell/80"
+              style={{
+                width: Math.max(28, endlessCols * 4),
+                height: Math.max(28, endlessRows * 4),
+                backgroundImage:
+                  "linear-gradient(to right, color-mix(in oklab, var(--color-fg) 14%, transparent) 1px, transparent 1px), linear-gradient(to bottom, color-mix(in oklab, var(--color-fg) 14%, transparent) 1px, transparent 1px)",
+                backgroundSize: `${100 / endlessCols}% ${100 / endlessRows}%`,
+              }}
+              aria-hidden
+            />
+          </div>
         </div>
 
         <p className="mb-2 text-[11px] uppercase tracking-[0.16em] text-fg-subtle">

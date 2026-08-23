@@ -74,6 +74,8 @@ export type Level = {
   number: number;
   briefing: string;
   grid: number;
+  /** Height in cells. Defaults to `grid` (square). Endless may be rectangular. */
+  rows?: number;
   group?: string;
   blocked?: Cell[];
   fixed?: { r: number; c: number; rank: Rank; suit: Suit }[];
@@ -107,6 +109,8 @@ export const HAND_RANK: Record<HandName, number> = {
 };
 
 export const BOARD_SIZE = 11;
+export const BOARD_SIZE_MIN = 5;
+export const BOARD_SIZE_MAX = 15;
 export const CELL_W = 34;
 export const CELL_H = 48;
 export const CELL_GAP = 2;
@@ -131,3 +135,10 @@ export const DIFFICULTY_ORDER: Difficulty[] = [
   "hard",
   "expert",
 ];
+
+export function boardCols(level: { grid: number }): number {
+  return level.grid || BOARD_SIZE;
+}
+export function boardRows(level: { grid: number; rows?: number }): number {
+  return level.rows || level.grid || BOARD_SIZE;
+}

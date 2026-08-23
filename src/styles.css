@@ -168,6 +168,20 @@
   animation: guide-dash 0.55s linear infinite;
   filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.55));
 }
+.guide-hand {
+  width: 118px;
+  height: 146px;
+  will-change: transform, left, top, opacity;
+  filter: drop-shadow(0 6px 10px rgba(0, 0, 0, 0.42));
+}
+.guide-hand-svg {
+  display: block;
+  overflow: visible;
+}
+.gh-pose {
+  transition: opacity 80ms ease-out;
+}
+
 
 @keyframes guide-dash {
   to {
@@ -181,6 +195,35 @@
   flex-shrink: 0;
   overflow: visible;
 }
+.cross-mascot-hit {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0.1rem;
+  border: 0;
+  background: transparent;
+  border-radius: 0.75rem;
+  cursor: pointer;
+  perspective: 420px;
+  transform-origin: 50% 88%;
+  transform-style: preserve-3d;
+}
+
+.cross-mascot-hit:focus-visible {
+  outline: 2px solid var(--color-gold);
+  outline-offset: 3px;
+}
+
+.cross-mascot-hit.is-reacting .cross-mascot-bob,
+.cross-mascot-hit.is-reacting .cross-mascot-brow,
+.cross-mascot-hit.is-reacting .cross-mascot-lid,
+.cross-mascot-hit.is-reacting .cross-mascot-hat,
+.cross-mascot-hit.is-reacting .cross-mascot-bell {
+  animation: none;
+}
+
 
 .cross-mascot-bob {
   transform-origin: 40px 108px;
@@ -324,6 +367,7 @@
   .teach-outline-bad,
   .slot-mark,
   .guide-arrow,
+  .guide-hand,
   .cta-pulse,
   .cross-mascot-bob,
   .cross-mascot-brow,
@@ -343,6 +387,30 @@
 .suit-bar-h { background: var(--suit-h, var(--color-pip-red)); }
 .suit-bar-d { background: var(--suit-d, var(--color-pip-red)); }
 .suit-bar-c { background: var(--suit-c, var(--color-ink)); }
+
+/* Large-rank: cream/gold faces tint by red vs black suits. */
+.card-large-cream-red { background: #f4d8cf; }
+.card-large-cream-black { background: #d4d6d2; }
+.card-large-gold-red { background: #f0b83e; }
+.card-large-gold-black { background: #c4bc72; }
+.card-large .suit-bar-h { background: #8e1a24; }
+.card-large .suit-bar-d { background: #e03d3d; }
+.card-large .suit-bar-s { background: #141614; }
+.card-large .suit-bar-c { background: #555a58; }
+body.colorblind .card-large .suit-bar-h { background: var(--suit-h); }
+body.colorblind .card-large .suit-bar-d { background: var(--suit-d); }
+body.colorblind .card-large .suit-bar-s { background: var(--suit-s); }
+body.colorblind .card-large .suit-bar-c { background: var(--suit-c); }
+
+.pooled-card-face {
+  width: 100%;
+  height: 100%;
+  transform-origin: 50% 88%;
+}
+
+[data-fly-card] {
+  transform-origin: 50% 88%;
+}
 
 /* Gold player cards: split reds and blacks so suits read on yellow. */
 .card-playable {

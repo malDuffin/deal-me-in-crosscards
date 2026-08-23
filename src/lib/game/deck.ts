@@ -1,7 +1,7 @@
 import { RANKS, SUITS, type Card, type Rank, type Suit } from "./types";
 
-export function makeCard(rank: Rank, suit: Suit, index: number, fixed = false): Card {
-  return { id: `${rank}${suit}-${index}`, rank, suit, fixed };
+export function makeCard(rank: Rank, suit: Suit, _index = 0, fixed = false): Card {
+  return { id: `${rank}${suit}`, rank, suit, fixed };
 }
 
 export function fullDeck(): { rank: Rank; suit: Suit }[] {

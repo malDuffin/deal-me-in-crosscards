@@ -12,10 +12,19 @@ import {
   Shuffle,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import gsap from "gsap";
 import { SettingsSheet } from "@/components/game/SettingsSheet";
 import { ShareSheet } from "@/components/game/ShareSheet";
 import { Button } from "@/components/ui/button";
-import { fadeSlideIn } from "@/lib/game/juice";
+import {
+  playBounce,
+  playClick,
+  playDeal,
+  playSelect,
+  playWhoosh,
+  unlockAudio,
+} from "@/lib/game/audio";
+import { fadeSlideIn, prefersReducedMotion } from "@/lib/game/juice";
 import { WaitOverlay } from "@/components/game/WaitOverlay";
 import { HOWTO_LEVELS, PUZZLE_LEVELS, TRAINING_LEVELS } from "@/lib/game/levels";
 import { loadProgress, type Progress } from "@/lib/game/progress";
@@ -30,74 +39,289 @@ const DIFFS: { id: Difficulty; blurb: string }[] = [
   { id: "expert", blurb: "22–26 gold seats. Most of the board is yours." },
 ];
 
+const MASCOT_CREAM = "#fbf6e8";
+const MASCOT_ANGRY_BG = "#e85a5a";
+const MASCOT_FUNNY_BG = "#5cb87a";
+
+const ANGRY_MOVES = ["startle", "rage", "stomp"] as const;
+const FUNNY_MOVES = ["wink", "hop", "laugh"] as const;
+type AngryMove = (typeof ANGRY_MOVES)[number];
+type FunnyMove = (typeof FUNNY_MOVES)[number];
+type JokerMove = AngryMove | FunnyMove;
+
+function pickJokerMove(last: JokerMove | null): { move: JokerMove; mood: "angry" | "funny" } {
+  // Angry is ~3× more likely than funny (75% / 25%).
+  const mood: "angry" | "funny" = Math.random() < 0.75 ? "angry" : "funny";
+  const pool = (mood === "angry" ? ANGRY_MOVES : FUNNY_MOVES).filter((m) => m !== last);
+  const list = pool.length ? pool : mood === "angry" ? [...ANGRY_MOVES] : [...FUNNY_MOVES];
+  const move = list[Math.floor(Math.random() * list.length)]!;
+  return { move, mood };
+}
+
 function CrossCardMascot() {
+  const hitRef = useRef<HTMLButtonElement>(null);
+  const bgRef = useRef<SVGRectElement>(null);
+  const hatRef = useRef<SVGGElement>(null);
+  const browRef = useRef<SVGGElement>(null);
+  const lidLRef = useRef<SVGRectElement>(null);
+  const lidRRef = useRef<SVGRectElement>(null);
+  const steamRef = useRef<SVGGElement>(null);
+  const mouthMadRef = useRef<SVGGElement>(null);
+  const mouthORef = useRef<SVGEllipseElement>(null);
+  const mouthLaughRef = useRef<SVGPathElement>(null);
+  const busy = useRef(false);
+  const lastMove = useRef<JokerMove | null>(null);
+
+  useEffect(() => {
+    const hit = hitRef.current;
+    return () => {
+      if (hit) gsap.killTweensOf(hit);
+    };
+  }, []);
+
+  const poke = () => {
+    unlockAudio();
+    if (busy.current) return;
+    const hit = hitRef.current;
+    if (!hit) return;
+
+    if (prefersReducedMotion()) {
+      playClick();
+      gsap.fromTo(hit, { scale: 0.96 }, { scale: 1, duration: 0.18, ease: "power2.out" });
+      return;
+    }
+
+    const { move, mood } = pickJokerMove(lastMove.current);
+    lastMove.current = move;
+    busy.current = true;
+    hit.classList.add("is-reacting");
+
+    const hat = hatRef.current;
+    const brow = browRef.current;
+    const lidL = lidLRef.current;
+    const lidR = lidRRef.current;
+    const steam = steamRef.current;
+    const mouthMad = mouthMadRef.current;
+    const mouthO = mouthORef.current;
+    const mouthLaugh = mouthLaughRef.current;
+    const bg = bgRef.current;
+    const tint = mood === "angry" ? MASCOT_ANGRY_BG : MASCOT_FUNNY_BG;
+
+    gsap.set(hit, { transformOrigin: "50% 88%" });
+    if (hat) gsap.set(hat, { transformOrigin: "40px 24px" });
+    if (brow) gsap.set(brow, { transformOrigin: "40px 42px" });
+    if (lidL) gsap.set(lidL, { transformOrigin: "50% 0%" });
+    if (lidR) gsap.set(lidR, { transformOrigin: "50% 0%" });
+    if (steam) gsap.set(steam, { transformOrigin: "40px 8px" });
+
+    const done = () => {
+      gsap.set(
+        [hit, hat, brow, lidL, lidR, steam, mouthMad, mouthO, mouthLaugh].filter(Boolean),
+        { clearProps: "transform,x,y,rotation,rotationY,scale,scaleX,scaleY,opacity" },
+      );
+      gsap.set(bg, { fill: MASCOT_CREAM });
+      hit.classList.remove("is-reacting");
+      busy.current = false;
+    };
+
+    const tl = gsap.timeline({ onComplete: done });
+    if (bg) {
+      tl.fromTo(bg, { fill: MASCOT_CREAM }, { fill: tint, duration: 0.18, ease: "power2.out" }, 0);
+      tl.to(bg, { fill: MASCOT_CREAM, duration: 0.35, ease: "power1.in" }, 0.55);
+    }
+
+    if (move === "startle") {
+      playBounce();
+      tl.to(hit, { y: -14, rotate: 7, duration: 0.12, ease: "power2.out" }, 0);
+      tl.to(hit, { x: -7, duration: 0.05 }, 0.12);
+      tl.to(hit, { x: 7, duration: 0.05 });
+      tl.to(hit, { x: -4, duration: 0.05 });
+      tl.to(hit, { x: 0, y: 0, rotate: 0, duration: 0.32, ease: "back.out(2.4)" });
+      if (brow) tl.to(brow, { y: 5, duration: 0.1 }, 0);
+      if (lidL && lidR) {
+        tl.to([lidL, lidR], { scaleY: 1, duration: 0.08 }, 0);
+        tl.to([lidL, lidR], { scaleY: 0, duration: 0.14 }, 0.2);
+      }
+      if (mouthMad && mouthO) {
+        tl.to(mouthMad, { opacity: 0, duration: 0.08 }, 0);
+        tl.to(mouthO, { opacity: 1, duration: 0.08 }, 0);
+        tl.to(mouthO, { opacity: 0, duration: 0.16 }, 0.55);
+        tl.to(mouthMad, { opacity: 1, duration: 0.16 }, 0.55);
+      }
+      if (steam) {
+        tl.fromTo(steam, { opacity: 0, y: 6 }, { opacity: 1, y: -6, duration: 0.18 }, 0.04);
+        tl.to(steam, { opacity: 0, y: -16, duration: 0.34 }, 0.28);
+      }
+      if (hat) tl.to(hat, { rotate: 12, duration: 0.14 }, 0);
+      if (hat) tl.to(hat, { rotate: 0, duration: 0.3, ease: "elastic.out(1, 0.5)" }, 0.2);
+    } else if (move === "stomp") {
+      playBounce();
+      tl.to(hit, { y: 8, scaleY: 0.88, scaleX: 1.08, duration: 0.1, ease: "power2.in" }, 0);
+      tl.to(hit, { y: -16, scaleY: 1.08, scaleX: 0.94, duration: 0.18, ease: "power2.out" });
+      tl.to(hit, { y: 0, scaleY: 1, scaleX: 1, duration: 0.28, ease: "bounce.out" });
+      if (brow) tl.to(brow, { y: 4, duration: 0.1 }, 0);
+      if (brow) tl.to(brow, { y: 0, duration: 0.25 }, 0.4);
+      if (steam) {
+        tl.fromTo(steam, { opacity: 0, y: 4 }, { opacity: 1, y: -8, duration: 0.2 }, 0.12);
+        tl.to(steam, { opacity: 0, y: -18, duration: 0.3 }, 0.35);
+      }
+      if (hat) {
+        tl.to(hat, { rotate: -10, duration: 0.12 }, 0);
+        tl.to(hat, { rotate: 8, duration: 0.16 }, 0.12);
+        tl.to(hat, { rotate: 0, duration: 0.28, ease: "back.out(2)" }, 0.28);
+      }
+    } else if (move === "rage") {
+      playClick();
+      playBounce();
+      tl.to(hit, { x: -6, rotate: -8, duration: 0.05 }, 0);
+      tl.to(hit, { x: 6, rotate: 8, duration: 0.05 });
+      tl.to(hit, { x: -5, rotate: -6, duration: 0.05 });
+      tl.to(hit, { x: 5, rotate: 6, duration: 0.05 });
+      tl.to(hit, { x: -3, rotate: -3, duration: 0.05 });
+      tl.to(hit, { x: 0, rotate: 0, duration: 0.22, ease: "back.out(3)" });
+      if (brow) tl.to(brow, { y: 6, scaleY: 1.15, duration: 0.08 }, 0);
+      if (brow) tl.to(brow, { y: 0, scaleY: 1, duration: 0.28, ease: "power2.out" }, 0.35);
+      if (steam) {
+        tl.fromTo(steam, { opacity: 0, y: 4, scale: 0.7 }, { opacity: 1, y: -10, scale: 1.15, duration: 0.22 }, 0);
+        tl.to(steam, { opacity: 0, y: -22, duration: 0.38 }, 0.28);
+      }
+      if (hat) tl.to(hat, { rotate: -14, y: -3, duration: 0.1 }, 0);
+      if (hat) tl.to(hat, { rotate: 0, y: 0, duration: 0.32, ease: "elastic.out(1, 0.45)" }, 0.28);
+    } else if (move === "wink") {
+      playSelect();
+      tl.to(hit, { rotate: 8, y: -4, duration: 0.16, ease: "power2.out" }, 0);
+      tl.to(hit, { rotate: 0, y: 0, duration: 0.36, ease: "back.out(2)" }, 0.42);
+      if (lidL) tl.to(lidL, { scaleY: 1, duration: 0.1 }, 0);
+      if (lidL) tl.to(lidL, { scaleY: 0, duration: 0.16 }, 0.42);
+      if (hat) tl.to(hat, { rotate: 16, duration: 0.18 }, 0);
+      if (hat) tl.to(hat, { rotate: 0, duration: 0.34, ease: "elastic.out(1, 0.5)" }, 0.42);
+    } else if (move === "laugh") {
+      playWhoosh();
+      playSelect();
+      tl.to(hit, { rotate: -6, duration: 0.08 }, 0);
+      tl.to(hit, { rotate: 6, duration: 0.08 });
+      tl.to(hit, { rotate: -5, duration: 0.08 });
+      tl.to(hit, { rotate: 5, duration: 0.08 });
+      tl.to(hit, { rotate: -3, duration: 0.08 });
+      tl.to(hit, { rotate: 0, duration: 0.2, ease: "back.out(2)" });
+      if (mouthMad && mouthLaugh) {
+        tl.to(mouthMad, { opacity: 0, duration: 0.08 }, 0);
+        tl.to(mouthLaugh, { opacity: 1, duration: 0.08 }, 0);
+        tl.to(mouthLaugh, { opacity: 0, duration: 0.18 }, 0.55);
+        tl.to(mouthMad, { opacity: 1, duration: 0.18 }, 0.55);
+      }
+      if (lidL && lidR) {
+        tl.to([lidL, lidR], { scaleY: 0.55, duration: 0.1 }, 0);
+        tl.to([lidL, lidR], { scaleY: 0, duration: 0.18 }, 0.5);
+      }
+      if (hat) {
+        tl.to(hat, { rotate: 14, y: -2, duration: 0.15 }, 0);
+        tl.to(hat, { rotate: -10, duration: 0.2 }, 0.15);
+        tl.to(hat, { rotate: 0, y: 0, duration: 0.28, ease: "elastic.out(1, 0.5)" }, 0.4);
+      }
+    } else {
+      playDeal();
+      tl.to(hit, { y: -22, scaleY: 1.06, scaleX: 0.94, duration: 0.18, ease: "power2.out" }, 0);
+      tl.to(hit, { y: 0, scaleY: 0.92, scaleX: 1.08, duration: 0.16, ease: "power2.in" });
+      tl.to(hit, { scaleY: 1, scaleX: 1, duration: 0.28, ease: "elastic.out(1, 0.45)" });
+      if (hat) tl.to(hat, { y: -8, rotate: 10, duration: 0.18 }, 0);
+      if (hat) tl.to(hat, { y: 2, rotate: -6, duration: 0.16 }, 0.18);
+      if (hat) tl.to(hat, { y: 0, rotate: 0, duration: 0.28, ease: "back.out(2)" }, 0.34);
+      if (lidL && lidR) {
+        tl.to([lidL, lidR], { scaleY: 1, duration: 0.08 }, 0.16);
+        tl.to([lidL, lidR], { scaleY: 0, duration: 0.12 }, 0.28);
+      }
+    }
+  };
+
   return (
-    <svg
-      className="cross-mascot"
-      viewBox="0 -8 80 128"
-      aria-hidden="true"
-      role="img"
+    <button
+      ref={hitRef}
+      type="button"
+      className="cross-mascot-hit"
+      aria-label="Poke the joker"
+      onClick={poke}
     >
-      <title>An angry joker card</title>
-      <defs>
-        <clipPath id="mascot-clip">
-          <rect x="6" y="14" width="68" height="98" rx="8" />
-        </clipPath>
-      </defs>
-      <g className="cross-mascot-bob">
-        <rect x="6" y="14" width="68" height="98" rx="8" fill="#fbf6e8" />
-        <g clipPath="url(#mascot-clip)">
-          <path d="M6 78 H74 V104 C74 108.4 70.4 112 66 112 H14 C9.6 112 6 108.4 6 104 Z" fill="#1a1712" />
-          <path d="M6 78 H74 V86 H6 Z" fill="#b4232c" />
+      <svg className="cross-mascot" viewBox="0 -8 80 128" role="img">
+        <title>An angry joker card</title>
+        <defs>
+          <clipPath id="mascot-clip">
+            <rect x="6" y="14" width="68" height="98" rx="8" />
+          </clipPath>
+        </defs>
+        <g className="cross-mascot-bob">
+          <rect ref={bgRef} x="6" y="14" width="68" height="98" rx="8" fill={MASCOT_CREAM} />
+          <g clipPath="url(#mascot-clip)">
+            <path d="M6 78 H74 V104 C74 108.4 70.4 112 66 112 H14 C9.6 112 6 108.4 6 104 Z" fill="#1a1712" />
+            <path d="M6 78 H74 V86 H6 Z" fill="#b4232c" />
+          </g>
+          <rect x="6" y="14" width="68" height="98" rx="8" fill="none" stroke="#2a2118" strokeWidth="3" />
+
+          <text x="12" y="28" fill="#b4232c" fontFamily="Fraunces, Times New Roman, serif" fontSize="11" fontWeight="700">
+            J
+          </text>
+          <text
+            x="68"
+            y="104"
+            fill="#e8c547"
+            fontFamily="Fraunces, Times New Roman, serif"
+            fontSize="11"
+            fontWeight="700"
+            textAnchor="end"
+          >
+            J
+          </text>
+
+          <g ref={steamRef} className="cross-mascot-steam" opacity={0}>
+            <ellipse cx="22" cy="6" rx="3.2" ry="4.2" fill="#efe7d6" />
+            <ellipse cx="34" cy="-2" rx="3.8" ry="5" fill="#efe7d6" />
+            <ellipse cx="48" cy="4" rx="3" ry="4" fill="#efe7d6" />
+          </g>
+
+          <g ref={hatRef} className="cross-mascot-hat">
+            <path d="M18 28 L8 4 L28 22 Z" fill="#b4232c" stroke="#2a2118" strokeWidth="1.4" strokeLinejoin="round" />
+            <path d="M40 16 L40 -2 L52 22 Z" fill="#e8c547" stroke="#2a2118" strokeWidth="1.4" strokeLinejoin="round" />
+            <path d="M62 28 L72 5 L50 22 Z" fill="#1a1712" stroke="#e8c547" strokeWidth="1.4" strokeLinejoin="round" />
+            <circle className="cross-mascot-bell" cx="8" cy="4" r="3.2" fill="#e8c547" stroke="#2a2118" strokeWidth="1" />
+            <circle className="cross-mascot-bell" cx="40" cy="-2" r="3.2" fill="#b4232c" stroke="#2a2118" strokeWidth="1" />
+            <circle className="cross-mascot-bell" cx="72" cy="5" r="3.2" fill="#e8c547" stroke="#2a2118" strokeWidth="1" />
+          </g>
+
+          <ellipse cx="40" cy="52" rx="22" ry="20" fill="#f3d7b0" stroke="#2a2118" strokeWidth="1.3" />
+          <path d="M24 44 Q28 38 34 40" fill="none" stroke="#e7b48a" strokeWidth="2" strokeLinecap="round" />
+
+          <g ref={browRef} className="cross-mascot-brow">
+            <path d="M24 42 L36 48" stroke="#1a1712" strokeWidth="3.6" strokeLinecap="round" />
+            <path d="M56 42 L44 48" stroke="#1a1712" strokeWidth="3.6" strokeLinecap="round" />
+          </g>
+          <g className="cross-mascot-eyes">
+            <ellipse cx="31" cy="54" rx="6.2" ry="6.8" fill="#1a1712" />
+            <ellipse cx="49" cy="54" rx="6.2" ry="6.8" fill="#1a1712" />
+            <circle cx="32.8" cy="52.4" r="1.7" fill="#fbf6e8" />
+            <circle cx="50.8" cy="52.4" r="1.7" fill="#fbf6e8" />
+            <rect ref={lidLRef} className="cross-mascot-lid" x="24.5" y="46.5" width="13" height="15" rx="6" fill="#f3d7b0" />
+            <rect ref={lidRRef} className="cross-mascot-lid" x="42.5" y="46.5" width="13" height="15" rx="6" fill="#f3d7b0" />
+          </g>
+          <g ref={mouthMadRef}>
+            <path d="M32 66 L36 63 L40 66 L44 63 L48 66" fill="none" stroke="#1a1712" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="M33 68 Q40 72 47 68" fill="none" stroke="#1a1712" strokeWidth="2.6" strokeLinecap="round" />
+          </g>
+          <ellipse ref={mouthORef} cx="40" cy="67" rx="4.2" ry="4.8" fill="#1a1712" opacity={0} />
+          <path
+            ref={mouthLaughRef}
+            d="M30 64 Q40 76 50 64"
+            fill="none"
+            stroke="#1a1712"
+            strokeWidth="2.8"
+            strokeLinecap="round"
+            opacity={0}
+          />
+
+          <path d="M18 70 Q24 64 32 70 Q40 64 48 70 Q56 64 62 70 Q56 76 48 72 Q40 78 32 72 Q24 76 18 70Z" fill="#b4232c" stroke="#2a2118" strokeWidth="1.2" />
+          <path d="M24 70 Q32 66 40 70 Q48 66 56 70" fill="none" stroke="#e8c547" strokeWidth="1.4" />
         </g>
-        <rect x="6" y="14" width="68" height="98" rx="8" fill="none" stroke="#2a2118" strokeWidth="3" />
-
-        <text x="12" y="28" fill="#b4232c" fontFamily="Fraunces, Times New Roman, serif" fontSize="11" fontWeight="700">
-          J
-        </text>
-        <text
-          x="68"
-          y="104"
-          fill="#e8c547"
-          fontFamily="Fraunces, Times New Roman, serif"
-          fontSize="11"
-          fontWeight="700"
-          textAnchor="end"
-        >
-          J
-        </text>
-
-        <g className="cross-mascot-hat">
-          <path d="M18 28 L8 4 L28 22 Z" fill="#b4232c" stroke="#2a2118" strokeWidth="1.4" strokeLinejoin="round" />
-          <path d="M40 16 L40 -2 L52 22 Z" fill="#e8c547" stroke="#2a2118" strokeWidth="1.4" strokeLinejoin="round" />
-          <path d="M62 28 L72 5 L50 22 Z" fill="#1a1712" stroke="#e8c547" strokeWidth="1.4" strokeLinejoin="round" />
-          <circle className="cross-mascot-bell" cx="8" cy="4" r="3.2" fill="#e8c547" stroke="#2a2118" strokeWidth="1" />
-          <circle className="cross-mascot-bell" cx="40" cy="-2" r="3.2" fill="#b4232c" stroke="#2a2118" strokeWidth="1" />
-          <circle className="cross-mascot-bell" cx="72" cy="5" r="3.2" fill="#e8c547" stroke="#2a2118" strokeWidth="1" />
-        </g>
-
-        <ellipse cx="40" cy="52" rx="22" ry="20" fill="#f3d7b0" stroke="#2a2118" strokeWidth="1.3" />
-        <path d="M24 44 Q28 38 34 40" fill="none" stroke="#e7b48a" strokeWidth="2" strokeLinecap="round" />
-
-        <g className="cross-mascot-brow">
-          <path d="M24 42 L36 48" stroke="#1a1712" strokeWidth="3.6" strokeLinecap="round" />
-          <path d="M56 42 L44 48" stroke="#1a1712" strokeWidth="3.6" strokeLinecap="round" />
-        </g>
-        <g className="cross-mascot-eyes">
-          <ellipse cx="31" cy="54" rx="6.2" ry="6.8" fill="#1a1712" />
-          <ellipse cx="49" cy="54" rx="6.2" ry="6.8" fill="#1a1712" />
-          <circle cx="32.8" cy="52.4" r="1.7" fill="#fbf6e8" />
-          <circle cx="50.8" cy="52.4" r="1.7" fill="#fbf6e8" />
-          <rect className="cross-mascot-lid" x="24.5" y="46.5" width="13" height="15" rx="6" fill="#f3d7b0" />
-          <rect className="cross-mascot-lid" x="42.5" y="46.5" width="13" height="15" rx="6" fill="#f3d7b0" />
-        </g>
-        <path d="M32 66 L36 63 L40 66 L44 63 L48 66" fill="none" stroke="#1a1712" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
-        <path d="M33 68 Q40 72 47 68" fill="none" stroke="#1a1712" strokeWidth="2.6" strokeLinecap="round" />
-
-        <path d="M18 70 Q24 64 32 70 Q40 64 48 70 Q56 64 62 70 Q56 76 48 72 Q40 78 32 72 Q24 76 18 70Z" fill="#b4232c" stroke="#2a2118" strokeWidth="1.2" />
-        <path d="M24 70 Q32 66 40 70 Q48 66 56 70" fill="none" stroke="#e8c547" strokeWidth="1.4" />
-      </g>
-    </svg>
+      </svg>
+    </button>
   );
 }
 

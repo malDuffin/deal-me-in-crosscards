@@ -36,11 +36,19 @@ export function CardFace({
   }
 
   if (style === "large") {
+    const redSuit = card.suit === "H" || card.suit === "D";
     return (
       <div
         className={cn(
-          "relative flex h-full w-full flex-col overflow-hidden rounded-[4px] card-shadow",
-          playable ? "card-playable bg-gold" : "bg-cream",
+          "relative flex h-full w-full flex-col overflow-hidden rounded-[4px] card-shadow card-large",
+          playable ? "card-playable" : null,
+          playable
+            ? redSuit
+              ? "card-large-gold-red"
+              : "card-large-gold-black"
+            : redSuit
+              ? "card-large-cream-red"
+              : "card-large-cream-black",
           dimmed && "opacity-80",
           className,
         )}
